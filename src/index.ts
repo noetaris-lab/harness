@@ -1,1 +1,1 @@
-// public API — populated by F3+
+export { field, type FieldDefinition, type StateFromSchema } from './harness/state-field.js'
