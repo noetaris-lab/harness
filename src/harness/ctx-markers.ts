@@ -6,12 +6,15 @@ export const RUNTIME_TAG = '__noetaris_runtime__' as const
 export type RequiredMarker = { readonly _tag: typeof REQUIRED_TAG }
 export type RuntimeMarker = { readonly _tag: typeof RUNTIME_TAG }
 
-// object branch includes | RequiredMarker | RuntimeMarker so a top-level marker is accepted
-// where DeepWithMarkers<T> is expected (e.g. h.provide('slot', required()) on an object slot)
+// function guard prevents TypeScript from recursing into Function's own method properties
+// (call, bind, apply, etc.) when T is a function type, which would make the mapped type
+// unresolvable and break @ts-expect-error enforcement on concrete value checks
 export type DeepWithMarkers<T> =
-  T extends object
-    ? { [K in keyof T]: DeepWithMarkers<T[K]> | RequiredMarker | RuntimeMarker } | RequiredMarker | RuntimeMarker
-    : T | RequiredMarker | RuntimeMarker
+  T extends (...args: any[]) => any
+    ? T | RequiredMarker | RuntimeMarker
+    : T extends object
+      ? { [K in keyof T]: DeepWithMarkers<T[K]> | RequiredMarker | RuntimeMarker } | RequiredMarker | RuntimeMarker
+      : T | RequiredMarker | RuntimeMarker
 
 export function required(): RequiredMarker {
   return { _tag: REQUIRED_TAG }
