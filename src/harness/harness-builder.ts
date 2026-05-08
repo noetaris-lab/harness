@@ -1,5 +1,8 @@
 import type { FieldDefinition, StateFromSchema } from './state-field.js'
 import type { RequiredMarker, RuntimeMarker, DeepWithMarkers } from './ctx-markers.js'
+import type { LoopBuilder, LoopDefinition } from '../loop/loop-dsl.js'
+import { createLoopBuilder, extractLoopDefinition } from '../loop/loop-dsl.js'
+import { validateLoop } from '../loop/loop-validator.js'
 
 // -----------------------------------------------------------------------
 // Harness type — accumulated at the type level across provide() calls
@@ -18,8 +21,8 @@ export type Harness<
   // store() Req/Run are not affected at the type level; nested markers are runtime-validated only (F2 spike constraint)
   store(stores: DeepWithMarkers<{ session?: unknown } & Record<string, unknown>>): Harness<Ctx, State, Req, Run>
 
-  // loop() parameter is `unknown` in F3 to avoid a forward dependency on F4's LoopBuilder type
-  loop(builder: (l: unknown) => void): Harness<Ctx, State, Req, Run>
+  // loop() parameter is LoopBuilder<State, Ctx> after F4 implementation
+  loop(builder: (l: LoopBuilder<State, Ctx>) => void): Harness<Ctx, State, Req, Run>
 }
 
 // -----------------------------------------------------------------------
@@ -45,7 +48,7 @@ export interface HarnessInternals<
 > {
   readonly stateSchema: Record<string, FieldDefinition<unknown>> | undefined
   readonly providers: readonly ProviderEntry[]
-  readonly loopBuilder: ((l: unknown) => void) | undefined
+  readonly loopDef: LoopDefinition | undefined
   readonly _req: Req | undefined
   readonly _run: Run | undefined
   readonly _state: State | undefined
@@ -101,7 +104,7 @@ export function createHarness<Ctx = any>(): <S extends object = {}>( // any: all
     const internals: HarnessInternals<Ctx, StateFromSchema<S>, never, never> = {
       stateSchema: stateSchema as Record<string, FieldDefinition<unknown>> | undefined, // as: S extends object; cast to internal schema representation
       providers: Object.freeze([]),
-      loopBuilder: undefined,
+      loopDef: undefined,
       _req: undefined,
       _run: undefined,
       _state: undefined,
@@ -129,7 +132,7 @@ function createBuilderInstance<
       const newInternals: HarnessInternals<Ctx, State, any, any> = { // any: same reason as return type annotation above
         stateSchema: internals.stateSchema,
         providers: newProviders,
-        loopBuilder: internals.loopBuilder,
+        loopDef: internals.loopDef,
         _req: undefined,
         _run: undefined,
         _state: undefined,
@@ -145,7 +148,7 @@ function createBuilderInstance<
       const newInternals: HarnessInternals<Ctx, State, Req, Run> = {
         stateSchema: internals.stateSchema,
         providers: newProviders,
-        loopBuilder: internals.loopBuilder,
+        loopDef: internals.loopDef,
         _req: undefined,
         _run: undefined,
         _state: undefined,
@@ -153,11 +156,15 @@ function createBuilderInstance<
       return createBuilderInstance(newInternals)
     },
 
-    loop(builderFn: (l: unknown) => void): Harness<Ctx, State, Req, Run> {
+    loop(builderFn: (l: LoopBuilder<State, Ctx>) => void): Harness<Ctx, State, Req, Run> {
+      const lb = createLoopBuilder<State, Ctx>()
+      builderFn(lb)
+      const def = extractLoopDefinition(lb as LoopBuilder<unknown, unknown>) // as: generic S/Ctx erased for internal storage
+      validateLoop(def)
       const newInternals: HarnessInternals<Ctx, State, Req, Run> = {
         stateSchema: internals.stateSchema,
         providers: internals.providers,
-        loopBuilder: builderFn,
+        loopDef: def,
         _req: undefined,
         _run: undefined,
         _state: undefined,

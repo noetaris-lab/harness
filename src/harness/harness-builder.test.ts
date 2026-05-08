@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from 'vitest'
+import { describe, it, expect, expectTypeOf, vi } from 'vitest'
 import { createHarness, getInternals, HarnessInternalsError, type Harness } from './harness-builder.js'
 import { field } from './state-field.js'
 import { required, runtime } from './ctx-markers.js'
@@ -30,7 +30,7 @@ describe('HarnessBuilder', () => {
 
       expect(internals.stateSchema).toBe(schema)
       expect(internals.providers).toEqual([])
-      expect(internals.loopBuilder).toBeUndefined()
+      expect(internals.loopDef).toBeUndefined()
     })
 
     it('stateSchema is undefined and providers is empty when inner factory called with no argument', () => {
@@ -38,7 +38,7 @@ describe('HarnessBuilder', () => {
 
       expect(internals.stateSchema).toBeUndefined()
       expect(internals.providers).toEqual([])
-      expect(internals.loopBuilder).toBeUndefined()
+      expect(internals.loopDef).toBeUndefined()
     })
 
     it('stateSchema is the exact empty object when inner factory called with {}', () => {
@@ -182,33 +182,49 @@ describe('HarnessBuilder', () => {
   })
 
   describe('loop()', () => {
-    it('stores loop builder by reference without invoking it', () => {
+    it('stores loop definition after invoking and validating the builder', () => {
       const h = createHarness()()
-      let invoked = false
-      const fn = (_l: unknown) => {
-        invoked = true
-      }
-      const h2 = h.loop(fn)
+      const f = vi.fn()
+      const h2 = h.loop((l) =>
+        l
+          .start()
+          .step('a', { run: f, route: () => 'done' })
+          .on('done')
+          .end(),
+      )
 
       expect(h2).not.toBe(h)
-      expect(invoked).toBe(false)
-      expect(getInternals(h2).loopBuilder).toBe(fn)
+      const internals = getInternals(h2)
+      expect(internals.loopDef).toBeDefined()
+      expect(internals.loopDef?.entryStep).toBe('a')
     })
 
-    it('replaces first loop builder when loop is called twice', () => {
+    it('replaces first loop definition when loop is called twice', () => {
       const h = createHarness()()
-      const fn1 = (_l: unknown) => {}
-      const fn2 = (_l: unknown) => {}
-      const h3 = h.loop(fn1).loop(fn2)
+      const f = vi.fn()
+      const h2 = h.loop((l) =>
+        l
+          .start()
+          .step('first', { run: f, route: () => 'done' })
+          .on('done')
+          .end(),
+      )
+      const h3 = h2.loop((l) =>
+        l
+          .start()
+          .step('second', { run: f, route: () => 'done' })
+          .on('done')
+          .end(),
+      )
 
-      expect(getInternals(h3).loopBuilder).toBe(fn2)
-      expect(getInternals(h3).loopBuilder).not.toBe(fn1)
+      expect(getInternals(h3).loopDef?.entryStep).toBe('second')
+      expect(getInternals(h2).loopDef?.entryStep).toBe('first')
     })
 
-    it('loopBuilder is undefined on a builder that has not had loop() called', () => {
+    it('loopDef is undefined on a builder that has not had loop() called', () => {
       const internals = getInternals(createHarness()())
 
-      expect(internals.loopBuilder).toBeUndefined()
+      expect(internals.loopDef).toBeUndefined()
     })
   })
 
@@ -219,7 +235,7 @@ describe('HarnessBuilder', () => {
 
       expect(internals).toHaveProperty('stateSchema')
       expect(internals).toHaveProperty('providers')
-      expect(internals).toHaveProperty('loopBuilder')
+      expect(internals).toHaveProperty('loopDef')
       expect(internals).toHaveProperty('_req')
       expect(internals).toHaveProperty('_run')
       expect(internals._req).toBeUndefined()
