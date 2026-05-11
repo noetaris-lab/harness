@@ -7,12 +7,16 @@ import {
   RuntimeSlotInAgentError,
   UnknownSlotError,
   AgentInternalsError,
+  MissingRuntimeSlotError,
+  RequiredSlotInRunError,
+  UnknownRunSlotError,
 } from './create-agent.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
 import { HarnessInternalsError } from '../harness/harness-builder.js'
 import { required, runtime } from '../harness/ctx-markers.js'
 import { field } from '../harness/state-field.js'
 import type { LoopBuilder } from '../loop/loop-dsl.js'
+import type { RunHandle } from './run-handle.js'
 
 // -----------------------------------------------------------------------
 // Shared helper: builder function that creates a minimal valid loop
@@ -210,16 +214,6 @@ describe('createAgent', () => {
   })
 
   describe('Group 4: Agent method stubs', () => {
-    it('agent.run() throws synchronously with "not implemented"', () => {
-      // arrange
-      const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
-      const agent = createAgent(h, {})
-
-      // act & assert
-      expect(() => agent.run({}, {})).toThrow(Error)
-      expect(() => agent.run({}, {})).toThrow(/not implemented/i)
-    })
-
     it('agent.resume() throws synchronously with "not implemented"', () => {
       // arrange
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
@@ -398,6 +392,587 @@ describe('createAgent', () => {
       expect(error.name).toBe('AgentInternalsError')
       expect(error).toBeInstanceOf(Error)
       expect(error).toBeInstanceOf(AgentInternalsError)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // F8 — agent.run() tests
+  // -----------------------------------------------------------------------
+
+  describe('agent.run()', () => {
+    describe('Group 1: Synchronous return', () => {
+      it('returns RunHandle before any step executes', async () => {
+        // arrange
+        const stepCallCount = { n: 0 }
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async () => { stepCallCount.n++; return {} },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4' })
+        const stepCountAfterRun = stepCallCount.n
+
+        // assert
+        expect(typeof run.then).toBe('function')
+        expect(typeof run.stop).toBe('function')
+        expect(typeof run.sessionId).toBe('string')
+        expect(stepCountAfterRun).toBe(0)
+
+        // cleanup
+        await run
+      })
+    })
+
+    describe('Group 2: Session identity', () => {
+      it('uses provided string sessionId from resources', async () => {
+        // arrange
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', sessionId: 'my-session-123' })
+        await run
+
+        // assert
+        expect(run.sessionId).toBe('my-session-123')
+      })
+
+      it('generates a UUID when resources has no sessionId key', async () => {
+        // arrange
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4' })
+        await run
+
+        // assert
+        expect(run.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+      })
+
+      it('generates a UUID when resources.sessionId is a non-string value', async () => {
+        // arrange
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', sessionId: 42 })
+        await run
+
+        // assert
+        expect(run.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+        expect(run.sessionId).not.toBe('42')
+      })
+    })
+
+    describe('Group 3: ctx assembly', () => {
+      it('runtime slot value is forwarded into ctx inside step execution', async () => {
+        // arrange
+        let capturedCtx: Record<string, unknown> | null = null
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async (s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        await agent.run({}, { model: 'gpt-4' })
+
+        // assert
+        expect(capturedCtx).not.toBeNull()
+        expect(capturedCtx!['model']).toBe('gpt-4')
+      })
+
+      it('ctx.sessionId equals run.sessionId inside step execution', async () => {
+        // arrange
+        let capturedCtxSessionId: unknown = undefined
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async (s, ctx) => {
+                  capturedCtxSessionId = ctx.sessionId
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', sessionId: 'ctx-test-session' })
+        await run
+
+        // assert
+        expect(run.sessionId).toBe('ctx-test-session')
+        expect(capturedCtxSessionId).toBe('ctx-test-session')
+      })
+
+      it('concrete resolvedProvider value is present in ctx and not overridden by resources', async () => {
+        // arrange
+        const concreteTools = { call: vi.fn() }
+        let capturedCtx: Record<string, unknown> | null = null
+        const h = createHarness<{ model: string; tools: typeof concreteTools }>()()
+          .provide('tools', concreteTools)
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async (s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        await agent.run({}, { model: 'gpt-4' })
+
+        // assert
+        expect(capturedCtx!['tools']).toBe(concreteTools)
+      })
+    })
+
+    describe('Group 4: AbortSignal wiring', () => {
+      it('abort() called during step execution stops run at next checkpoint', async () => {
+        // arrange
+        const ac = new AbortController()
+        let unblockStep1!: () => void
+        const step1Done = new Promise<void>(r => { unblockStep1 = r })
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async () => { await step1Done; return {} },
+              })
+              .step('step2', {
+                run: async () => ({}),
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
+        ac.abort()
+        unblockStep1()
+        const result = await run
+
+        // assert
+        expect(result.signal).toBeNull()
+      })
+
+      it('already-aborted signal causes run to stop before first step executes', async () => {
+        // arrange
+        const ac = new AbortController()
+        ac.abort()
+        const stepCallCount = { n: 0 }
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async () => { stepCallCount.n++; return {} },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
+        const result = await run
+
+        // assert
+        expect(result.signal).toBeNull()
+        expect(stepCallCount.n).toBe(0)
+      })
+
+      it('non-AbortSignal signal value is silently ignored and run completes normally', async () => {
+        // arrange
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', signal: 'abort' })
+        const result = await run
+
+        // assert
+        expect(result.signal).toBe('done')
+      })
+    })
+
+    describe('Group 5: Stop behavior', () => {
+      it('run.stop() resolves run with { state, signal: null }', async () => {
+        // arrange
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4' })
+        run.stop()
+        const result = await run
+
+        // assert
+        expect(result.signal).toBeNull()
+        expect(result.state).toBeDefined()
+      })
+    })
+
+    describe('Group 6: Reserved key passthrough', () => {
+      it('reserved keys alongside a valid runtime slot produce no validation error', async () => {
+        // arrange
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const callRun = () => agent.run({}, {
+          model: 'gpt-4',
+          sessionId: 'reserved-test',
+          signal: new AbortController().signal,
+          events: {},
+        })
+
+        // assert
+        expect(callRun).not.toThrow()
+
+        // cleanup
+        await callRun()
+      })
+    })
+
+    describe('Group 7: Step tracking (currentStep)', () => {
+      it('currentStep shows active step name when onBeforeStep has fired for that step', async () => {
+        // arrange
+        let unblockStep!: () => void
+        const blocker = new Promise<void>(r => { unblockStep = r })
+        let run: RunHandle
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('think', {
+                run: async () => { await blocker; return {} },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        run = agent.run({}, { model: 'gpt-4' })
+        await new Promise(r => setTimeout(r, 0))
+        const observed = run.currentStep
+        unblockStep()
+        await run
+
+        // assert
+        expect(observed).toBe('think')
+      })
+
+      it('currentStep is null after run completes normally', async () => {
+        // arrange
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4' })
+        await run
+
+        // assert
+        expect(run.currentStep).toBeNull()
+      })
+    })
+
+    describe('Group 8: Validation errors', () => {
+      // Shared harness: required() 'prompts', runtime() 'model', concrete 'tools'
+      const concreteTools = { fetch: vi.fn() }
+      const h = createHarness<{ model: string; prompts: string; tools: typeof concreteTools }>()()
+        .provide('prompts', required())
+        .provide('model', runtime())
+        .provide('tools', concreteTools)
+        .loop(l => {
+          l.start()
+            .step('run', { run: async () => ({}), route: () => 'done' })
+            .on('done').end()
+        })
+      const agent = createAgent(h, { prompts: 'You are a helpful assistant.' })
+
+      it('throws UnknownRunSlotError when resources contains a key not declared in harness', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, { model: 'gpt-4', foo: 'bar' })
+
+        // assert
+        expect(act).toThrow(UnknownRunSlotError)
+        expect(act).toThrow(expect.objectContaining({ key: 'foo' }))
+      })
+
+      it('throws RequiredSlotInRunError when resources contains a required() key', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, { model: 'gpt-4', prompts: 'override' })
+
+        // assert
+        expect(act).toThrow(RequiredSlotInRunError)
+        expect(act).toThrow(expect.objectContaining({ key: 'prompts' }))
+      })
+
+      it('throws UnknownRunSlotError when resources contains a concrete provider key', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, { model: 'gpt-4', tools: { fetch: vi.fn() } })
+
+        // assert
+        expect(act).toThrow(UnknownRunSlotError)
+        expect(act).toThrow(expect.objectContaining({ key: 'tools' }))
+      })
+
+      it('throws MissingRuntimeSlotError when a declared runtime() slot is absent from resources', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, {})
+
+        // assert
+        expect(act).toThrow(MissingRuntimeSlotError)
+        expect(act).toThrow(expect.objectContaining({ key: 'model' }))
+      })
+
+      it('throws UnknownRunSlotError (not MissingRuntimeSlotError) when resources has both unknown key and missing runtime slot', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, { foo: 'bar' })
+
+        // assert
+        expect(act).toThrow(UnknownRunSlotError)
+        expect(act).toThrow(expect.objectContaining({ key: 'foo' }))
+      })
+
+      it('throws UnknownRunSlotError (not RequiredSlotInRunError) when resources has both unknown key and required() key', () => {
+        // arrange — shared harness above
+
+        // act
+        const act = () => agent.run({}, { model: 'gpt-4', prompts: 'x', foo: 'bar' })
+
+        // assert
+        expect(act).toThrow(UnknownRunSlotError)
+        expect(act).toThrow(expect.objectContaining({ key: 'foo' }))
+      })
+    })
+
+    describe('Group 9: Edge cases', () => {
+      it('no validation error when resources has only reserved keys and harness has no runtime slots', async () => {
+        // arrange
+        const h = createHarness<{ sessionId: string }>()()
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const act = () => agent.run({}, { sessionId: 'reserved-only' })
+
+        // assert
+        expect(act).not.toThrow()
+
+        // cleanup
+        await agent.run({}, { sessionId: 'reserved-only' })
+      })
+
+      it('no validation error when resources is empty and harness has no runtime slots', async () => {
+        // arrange
+        const h = createHarness<{ sessionId: string }>()()
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const act = () => agent.run({}, {})
+
+        // assert
+        expect(act).not.toThrow()
+
+        // cleanup
+        await agent.run({}, {})
+      })
+
+      it('AbortSignal that fires after run completes has no observable effect', async () => {
+        // arrange
+        const ac = new AbortController()
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
+        const result = await run
+        ac.abort()
+
+        // assert
+        expect(result.signal).toBe('done')
+        expect(run.currentStep).toBeNull()
+      })
+
+      it('fresh stopFlag per call — stop() on first run does not affect second run', async () => {
+        // arrange
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run1 = agent.run({}, { model: 'gpt-4' })
+        run1.stop()
+        const result1 = await run1
+
+        const run2 = agent.run({}, { model: 'gpt-4' })
+        const result2 = await run2
+
+        // assert
+        expect(result1.signal).toBeNull()
+        expect(result2.signal).toBe('done')
+      })
+
+      it("fresh stepRef per call — run1's finally() does not clear run2's currentStep", async () => {
+        // arrange
+        let callCount = 0
+        let unblockRun2!: () => void
+        const blocker = new Promise<void>(r => { unblockRun2 = r })
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('think', {
+                run: async () => {
+                  callCount++
+                  if (callCount === 2) await blocker
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run1 = agent.run({}, { model: 'gpt-4' })
+        await run1
+
+        const run2 = agent.run({}, { model: 'gpt-4' })
+        await new Promise(r => setTimeout(r, 0))
+        const stepAfterRun1 = run2.currentStep
+        unblockRun2()
+        await run2
+
+        // assert
+        expect(stepAfterRun1).toBe('think')
+      })
+
+      it('ctx is a fresh plain object literal per call — not a shared reference from agentInternals', async () => {
+        // arrange
+        const ctxRefs: Array<Record<string, unknown>> = []
+        const h = createHarness<{ model: string }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', {
+                run: async (s, ctx) => {
+                  ctxRefs.push(ctx as Record<string, unknown>)
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        await agent.run({}, { model: 'gpt-4' })
+        await agent.run({}, { model: 'gpt-4' })
+
+        // assert
+        expect(ctxRefs).toHaveLength(2)
+        expect(ctxRefs[0]).not.toBe(ctxRefs[1])
+      })
     })
   })
 })

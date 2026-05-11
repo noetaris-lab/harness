@@ -78,6 +78,7 @@ export async function runLoop(
   ctx: Record<string, unknown> & { readonly sessionId: string },
   schema: Record<string, FieldDefinition<any>> | undefined, // any: see applyUpdate comment
   shouldStop?: () => boolean,
+  onBeforeStep?: (name: string) => void,
 ): Promise<LoopResult> {
   const implicitNextMap = buildImplicitNextMap(graph)
 
@@ -91,6 +92,8 @@ export async function runLoop(
     if (shouldStop?.()) {
       return { state, signal: null, cursor, paused: true }
     }
+
+    onBeforeStep?.(cursor)
 
     const step = graph.steps.find(s => s.name === cursor)!
 

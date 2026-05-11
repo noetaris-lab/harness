@@ -8,7 +8,9 @@ import { isRequiredMarker, isRuntimeMarker } from '../harness/ctx-markers.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
 import type { SessionPhase } from './session-store.js'
-import { resolveSessionStore, querySessionPhase } from './session-lifecycle.js'
+import { resolveSessionStore, runWithSession, querySessionPhase, type SessionRunOptions } from './session-lifecycle.js'
+import { createRunHandle, type RunHandle, type RunOutcome } from './run-handle.js'
+import { randomUUID } from 'node:crypto'
 
 // -----------------------------------------------------------------------
 // Agent — the minimal public object returned by createAgent
@@ -16,10 +18,9 @@ import { resolveSessionStore, querySessionPhase } from './session-lifecycle.js'
 
 export interface Agent {
   /**
-   * Start a new run or resume an existing session.
-   * Stub implementation in F5 throws. Real implementation in F6/F7/F8.
+   * Start a new run. Returns a RunHandle synchronously before execution begins.
    */
-  run(initialState: Record<string, unknown>, resources: Record<string, unknown>): never
+  run(initialState: Record<string, unknown>, resources: Record<string, unknown>): RunHandle
 
   /**
    * Cross-process entry point for responding to a pending interrupt.
@@ -42,6 +43,10 @@ export interface AgentInternals {
   readonly storeEntries: readonly ProviderEntry[]
   readonly loopDef: LoopDefinition
   readonly stateSchema: Record<string, FieldDefinition<unknown>> | undefined
+  /** Keys declared as runtime() in the harness — must be filled in agent.run() resources. */
+  readonly runtimeKeys: ReadonlySet<string>
+  /** Keys declared as required() in the harness — must NOT appear in agent.run() resources. */
+  readonly requiredKeys: ReadonlySet<string>
 }
 
 // -----------------------------------------------------------------------
@@ -89,6 +94,33 @@ export class AgentInternalsError extends Error {
   constructor() {
     super('value was not produced by createAgent — cannot read AgentInternals')
     this.name = 'AgentInternalsError'
+  }
+}
+
+export class MissingRuntimeSlotError extends Error {
+  readonly key: string
+  constructor(key: string) {
+    super(`runtime slot "${key}" was not provided in agent.run() resources`)
+    this.name = 'MissingRuntimeSlotError'
+    this.key = key
+  }
+}
+
+export class RequiredSlotInRunError extends Error {
+  readonly key: string
+  constructor(key: string) {
+    super(`slot "${key}" is a required() slot — provide it in createAgent(), not agent.run()`)
+    this.name = 'RequiredSlotInRunError'
+    this.key = key
+  }
+}
+
+export class UnknownRunSlotError extends Error {
+  readonly key: string
+  constructor(key: string) {
+    super(`slot "${key}" is not a runtime() slot — do not pass it in agent.run() resources`)
+    this.name = 'UnknownRunSlotError'
+    this.key = key
   }
 }
 
@@ -153,6 +185,8 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   // Build resolvedProviders map: iterate all providers in order, last-registered-wins
   const resolvedProviders = new Map<string, unknown>()
   const storeEntries: ProviderEntry[] = []
+  const runtimeKeys = new Set<string>()
+  const requiredKeys = new Set<string>()
 
   for (const entry of internals.providers) {
     if (entry.kind === 'store') {
@@ -161,11 +195,14 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       if (isRequiredMarker(entry.value)) {
         // Replace required() marker with the slot value
         resolvedProviders.set(entry.key, (slots as Record<string, unknown>)[entry.key]) // as: Req extends keyof Ctx erases to plain index at runtime
-      } else if (!isRuntimeMarker(entry.value)) {
+        requiredKeys.add(entry.key)
+      } else if (isRuntimeMarker(entry.value)) {
+        runtimeKeys.add(entry.key)
+        // runtime() markers are not included in resolvedProviders
+      } else {
         // Concrete value: include as-is
         resolvedProviders.set(entry.key, entry.value)
       }
-      // runtime() markers are not included in resolvedProviders
     }
   }
 
@@ -178,15 +215,90 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     storeEntries,
     loopDef: internals.loopDef, // Guaranteed to be non-undefined by validation 1
     stateSchema: internals.stateSchema,
+    runtimeKeys,
+    requiredKeys,
   }
+
+  // Reserved keys are skipped during agent.run() resource validation
+  const reservedRunKeys = new Set(['sessionId', 'signal', 'events'])
 
   // Create and return Agent with attached internals
   const agent: AgentWithInternals = {
-    run: () => {
-      throw new Error('not implemented — requires F6/F7/F8')
+    run: (initialState: Record<string, unknown>, resources: Record<string, unknown>): RunHandle => {
+      // Validation pass 1: unknown keys (not reserved, not runtime, not required)
+      for (const key of Object.keys(resources)) {
+        if (reservedRunKeys.has(key)) continue
+        if (!agentInternals.runtimeKeys.has(key) && !agentInternals.requiredKeys.has(key)) {
+          throw new UnknownRunSlotError(key)
+        }
+      }
+
+      // Validation pass 2: required() keys passed in resources
+      for (const key of Object.keys(resources)) {
+        if (reservedRunKeys.has(key)) continue
+        if (agentInternals.requiredKeys.has(key)) {
+          throw new RequiredSlotInRunError(key)
+        }
+      }
+
+      // Validation pass 3: missing runtime() keys
+      for (const key of agentInternals.runtimeKeys) {
+        if (!(key in resources)) {
+          throw new MissingRuntimeSlotError(key)
+        }
+      }
+
+      // Session ID resolution
+      const sessionId =
+        typeof resources['sessionId'] === 'string' ? resources['sessionId'] : randomUUID()
+
+      // AbortSignal wiring — register first to avoid race, then check already-aborted state
+      const stopFlag = { stopped: false }
+      const rawSignal = resources['signal']
+      if (rawSignal instanceof AbortSignal) {
+        rawSignal.addEventListener('abort', () => { stopFlag.stopped = true }, { once: true })
+        if (rawSignal.aborted) stopFlag.stopped = true
+      }
+
+      // Fresh stepRef per call for currentStep tracking
+      const stepRef: { current: string | null } = { current: null }
+
+      // Assemble ctx: resolvedProviders merged with runtime slots and sessionId
+      const runtimeSlots: Record<string, unknown> = {}
+      for (const key of agentInternals.runtimeKeys) {
+        runtimeSlots[key] = resources[key]
+      }
+      const ctx: Record<string, unknown> & { readonly sessionId: string } = {
+        ...Object.fromEntries(agentInternals.resolvedProviders),
+        ...runtimeSlots,
+        sessionId,
+      }
+
+      const options: SessionRunOptions = {
+        shouldStop: () => stopFlag.stopped,
+        onBeforeStep: (name: string) => { stepRef.current = name },
+      }
+
+      // Launch execution asynchronously — agent.run() returns before any async work begins
+      const execution = (async (): Promise<RunOutcome> => {
+        // Yield so agent.run() can return the RunHandle before any loop iteration starts
+        await Promise.resolve()
+        const r = await runWithSession(
+          capturedStore,
+          sessionId,
+          agentInternals.loopDef,
+          initialState,
+          agentInternals.stateSchema,
+          ctx,
+          options,
+        )
+        return { state: r.state, signal: r.signal }
+      })()
+
+      return createRunHandle(sessionId, execution, stopFlag, stepRef)
     },
     resume: () => {
-      throw new Error('not implemented — requires F6/F7/F8')
+      throw new Error('not implemented — requires F9')
     },
     status: (sessionId: string) => querySessionPhase(capturedStore, sessionId),
     [_agentInternals]: agentInternals,

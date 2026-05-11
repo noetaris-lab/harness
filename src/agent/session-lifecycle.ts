@@ -23,6 +23,8 @@ export interface SessionRunOptions {
    * The run result is still returned after this callback fires.
    */
   readonly onStoreError?: (error: unknown, phase: 'load' | 'persist') => void
+  /** Called just before each step executes. Used by RunHandle to track currentStep. */
+  readonly onBeforeStep?: (name: string) => void
 }
 
 // -----------------------------------------------------------------------
@@ -87,7 +89,7 @@ export async function runWithSession(
 ): Promise<LoopResult> {
   if (store === undefined) {
     const state = initializeState(null, initialStateArg, schema)
-    return runLoop(graph, state, ctx, schema, options?.shouldStop)
+    return runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep)
   }
 
   // Load phase — rethrow on failure; run never begins if load fails
@@ -101,7 +103,7 @@ export async function runWithSession(
   await store.save(sessionId, { phase: 'in-flight', state: snapshot })
 
   // Execute — errors from runLoop propagate uncaught
-  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop)
+  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep)
 
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {
