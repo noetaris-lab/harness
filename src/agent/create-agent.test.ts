@@ -230,23 +230,16 @@ describe('createAgent', () => {
       expect(() => agent.resume(undefined, 'session-1', 'interrupt-1')).toThrow(/not implemented/i)
     })
 
-    it('agent.status() returns a rejected Promise and does not throw synchronously', async () => {
+    it('agent.status() resolves with { phase: "fresh" } when no session store is configured', async () => {
       // arrange
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
       const agent = createAgent(h, {})
 
-      // act & assert
-      let threwSynchronously = false
-      let p: Promise<never>
-      try {
-        p = agent.status('session-1')
-      } catch {
-        threwSynchronously = true
-      }
+      // act
+      const status = await agent.status('session-1')
 
-      expect(threwSynchronously).toBe(false)
-      await expect(p!).rejects.toThrow(Error)
-      await expect(p!).rejects.toThrow(/not implemented/i)
+      // assert — F7 wires agent.status() to querySessionPhase; no store → fresh
+      expect(status).toEqual({ phase: 'fresh' })
     })
   })
 

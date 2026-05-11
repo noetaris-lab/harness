@@ -7,6 +7,8 @@ import {
 import { isRequiredMarker, isRuntimeMarker } from '../harness/ctx-markers.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
+import type { SessionPhase } from './session-store.js'
+import { resolveSessionStore, querySessionPhase } from './session-lifecycle.js'
 
 // -----------------------------------------------------------------------
 // Agent — the minimal public object returned by createAgent
@@ -27,9 +29,8 @@ export interface Agent {
 
   /**
    * Query the session store for the current phase of a session.
-   * Stub implementation in F5 throws. Real implementation in F7.
    */
-  status(sessionId: string): Promise<never>
+  status(sessionId: string): Promise<SessionPhase>
 }
 
 // -----------------------------------------------------------------------
@@ -168,6 +169,9 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     }
   }
 
+  // Resolve session store from store entries at construction time
+  const capturedStore = resolveSessionStore(storeEntries)
+
   // Construct AgentInternals
   const agentInternals: AgentInternals = {
     resolvedProviders,
@@ -184,9 +188,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     resume: () => {
       throw new Error('not implemented — requires F6/F7/F8')
     },
-    status: async () => {
-      throw new Error('not implemented — requires F7')
-    },
+    status: (sessionId: string) => querySessionPhase(capturedStore, sessionId),
     [_agentInternals]: agentInternals,
   }
 
