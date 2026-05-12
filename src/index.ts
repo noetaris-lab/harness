@@ -10,3 +10,4 @@ export {
   type RuntimeMarker,
   type DeepWithMarkers,
 } from './harness/ctx-markers.js'
+export { NoInterruptError } from './agent/interrupt-resume.js'

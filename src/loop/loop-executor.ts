@@ -1,5 +1,6 @@
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
+import { createInterruptFn, isInterruptPause } from '../agent/ctx-interrupt.js'
 
 // -----------------------------------------------------------------------
 // LoopResult
@@ -58,7 +59,7 @@ function applyUpdate(
   schema: Record<string, FieldDefinition<any>> | undefined, // any: FieldDefinition uses invariant T; any is required for heterogeneous schema maps
 ): void {
   for (const [key, value] of Object.entries(update)) {
-    if (key === '$error' || key === '$interrupt') continue
+    if (key === '$error' || key === '$interrupt' || key === '$interruptResponses') continue
     const reducer = schema?.[key]?.reduce
     if (reducer !== undefined) {
       state[key] = reducer(state[key], value)
@@ -79,14 +80,21 @@ export async function runLoop(
   schema: Record<string, FieldDefinition<any>> | undefined, // any: see applyUpdate comment
   shouldStop?: () => boolean,
   onBeforeStep?: (name: string) => void,
+  startCursor?: string,
 ): Promise<LoopResult> {
   const implicitNextMap = buildImplicitNextMap(graph)
 
   // Initialize framework-reserved fields if absent
   if (!('$error' in state)) state.$error = null
   if (!('$interrupt' in state)) state.$interrupt = null
+  if (!('$interruptResponses' in state)) state.$interruptResponses = {}
 
-  let cursor = graph.entryStep!
+  // callCountRef is shared between createInterruptFn and the per-step reset below
+  const callCountRef = { current: 0 }
+  // mutate ctx in-place so step.run receives the same object reference (invariant for callers)
+  ;(ctx as Record<string, unknown>)['interrupt'] = createInterruptFn(state, callCountRef) // as: Record<string, unknown> allows adding framework-injected fields to ctx
+
+  let cursor = startCursor ?? graph.entryStep!
 
   while (true) {
     if (shouldStop?.()) {
@@ -97,12 +105,28 @@ export async function runLoop(
 
     const step = graph.steps.find(s => s.name === cursor)!
 
+    // reset per-step counter before run (even for decision nodes, per design)
+    callCountRef.current = 0
+
     if (step.run !== undefined) {
-      const update = await step.run(
-        state as unknown as Parameters<typeof step.run>[0],
-        ctx as Parameters<typeof step.run>[1],
-      )
-      applyUpdate(state, update as Record<string, unknown>, schema)
+      // capture whether responses exist before the run; only clear interrupt state if they did
+      const hadResponses = Object.keys(state.$interruptResponses as Record<string, unknown>).length > 0
+      try {
+        const update = await step.run(
+          state as unknown as Parameters<typeof step.run>[0],
+          ctx as Parameters<typeof step.run>[1],
+        )
+        applyUpdate(state, update as Record<string, unknown>, schema)
+        // clear interrupt state only after a step that had stored responses to replay
+        if (hadResponses) {
+          state.$interrupt = null
+          state.$interruptResponses = {}
+        }
+      } catch (e) {
+        if (!isInterruptPause(e)) throw e
+        // InterruptPause was caught: $interrupt already written by createInterruptFn
+        return { state, signal: '$interrupt', cursor, paused: true }
+      }
     }
 
     if (step.route !== undefined) {

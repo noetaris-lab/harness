@@ -24,16 +24,35 @@ export interface RunHandle extends PromiseLike<RunOutcome> {
   readonly currentStep: string | null
 }
 
+import { NoInterruptError } from './interrupt-resume.js'
+
 export function createRunHandle(
   sessionId: string,
   execution: Promise<RunOutcome>,
   stopFlag: { stopped: boolean },
   stepRef: { current: string | null },
+  resumeFn?: (response: unknown, interruptId: string) => RunHandle,
 ): RunHandle {
-  // clear stepRef on settle regardless of how execution resolves
-  const settled = execution.finally(() => {
-    stepRef.current = null
-  })
+  let settledOutcome: RunOutcome | null = null
+
+  // NOTE: raw .then(onFulfilled, onRejected) is intentional here — NOT a coding-standards
+  // violation. async/await requires wrapping in a new async function, which changes control
+  // flow and does not populate `settledOutcome` as a side-effect at resolution time.
+  // .then() attaches handlers to an already-running Promise, allowing us to capture the
+  // fulfilled RunOutcome into the closure variable synchronously within the callback at the
+  // moment of resolution. run.resume() reads settledOutcome synchronously, so this is the
+  // only correct pattern; replacing it with async/await would break synchronous access.
+  const settled = execution.then(
+    (outcome: RunOutcome): RunOutcome => {
+      settledOutcome = outcome
+      stepRef.current = null
+      return outcome
+    },
+    (err: unknown): RunOutcome => {
+      stepRef.current = null
+      throw err
+    },
+  )
 
   const handle: RunHandle = {
     then<TResult1 = RunOutcome, TResult2 = never>(
@@ -47,8 +66,21 @@ export function createRunHandle(
       stopFlag.stopped = true
     },
 
-    resume(_response: unknown, _interruptId: string): RunHandle {
-      throw new Error('not implemented — requires F9')
+    resume(response: unknown, interruptId: string): RunHandle {
+      // backward-compatibility: 4-arg handle (no resumeFn) + unsettled → old stub error
+      if (settledOutcome === null && resumeFn === undefined) {
+        throw new Error('not implemented — requires F9')
+      }
+      if (settledOutcome === null) {
+        throw new NoInterruptError()
+      }
+      if (settledOutcome.signal !== '$interrupt') {
+        throw new NoInterruptError()
+      }
+      if (resumeFn === undefined) {
+        throw new NoInterruptError()
+      }
+      return resumeFn(response, interruptId)
     },
 
     get sessionId(): string {

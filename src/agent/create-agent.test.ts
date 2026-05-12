@@ -11,6 +11,7 @@ import {
   RequiredSlotInRunError,
   UnknownRunSlotError,
 } from './create-agent.js'
+import { NoInterruptError } from './interrupt-resume.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
 import { HarnessInternalsError } from '../harness/harness-builder.js'
 import { required, runtime } from '../harness/ctx-markers.js'
@@ -214,14 +215,19 @@ describe('createAgent', () => {
   })
 
   describe('Group 4: Agent method stubs', () => {
-    it('agent.resume() throws synchronously with "not implemented"', () => {
+    it('agent.resume() returns a RunHandle whose execution rejects with NoInterruptError when no store is configured', async () => {
       // arrange
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
       const agent = createAgent(h, {})
 
-      // act & assert
-      expect(() => agent.resume(undefined, 'session-1', 'interrupt-1')).toThrow(Error)
-      expect(() => agent.resume(undefined, 'session-1', 'interrupt-1')).toThrow(/not implemented/i)
+      // act
+      const run = agent.resume(undefined, 'session-1', 'interrupt-1')
+
+      // assert — returns synchronously (does not throw)
+      expect(run).toBeDefined()
+      expect(typeof run.stop).toBe('function')
+      // execution rejects with NoInterruptError (no store configured)
+      await expect(run).rejects.toThrow(NoInterruptError)
     })
 
     it('agent.status() resolves with { phase: "fresh" } when no session store is configured', async () => {

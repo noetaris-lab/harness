@@ -9,7 +9,9 @@ import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
 import type { SessionPhase } from './session-store.js'
 import { resolveSessionStore, runWithSession, querySessionPhase, type SessionRunOptions } from './session-lifecycle.js'
+import { runLoop } from '../loop/loop-executor.js'
 import { createRunHandle, type RunHandle, type RunOutcome } from './run-handle.js'
+import { NoInterruptError, injectInterruptResponse } from './interrupt-resume.js'
 import { randomUUID } from 'node:crypto'
 
 // -----------------------------------------------------------------------
@@ -24,9 +26,9 @@ export interface Agent {
 
   /**
    * Cross-process entry point for responding to a pending interrupt.
-   * Stub implementation in F5 throws. Real implementation in F8/F9.
+   * Returns a RunHandle synchronously; the execution promise performs the resume.
    */
-  resume(response: unknown, sessionId: string, interruptId: string): never
+  resume(response: unknown, sessionId: string, interruptId: string): RunHandle
 
   /**
    * Query the session store for the current phase of a session.
@@ -222,6 +224,45 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   // Reserved keys are skipped during agent.run() resource validation
   const reservedRunKeys = new Set(['sessionId', 'signal', 'events'])
 
+  // -----------------------------------------------------------------------
+  // makeAgentResumeHandle — factory for cross-process resume RunHandles
+  // -----------------------------------------------------------------------
+
+  const makeAgentResumeHandle = (
+    resp: unknown,
+    sId: string,
+    iId: string,
+  ): RunHandle => {
+    const flag = { stopped: false }
+    const ref: { current: string | null } = { current: null }
+
+    const exec = (async (): Promise<RunOutcome> => {
+      await Promise.resolve()
+      if (capturedStore === undefined) throw new NoInterruptError()
+      await injectInterruptResponse(capturedStore, sId, iId, resp)
+      const agentCtx: Record<string, unknown> & { readonly sessionId: string } = {
+        ...Object.fromEntries(agentInternals.resolvedProviders),
+        sessionId: sId,
+      }
+      const r = await runWithSession(
+        capturedStore,
+        sId,
+        agentInternals.loopDef,
+        {},
+        agentInternals.stateSchema,
+        agentCtx,
+        {
+          shouldStop: () => flag.stopped,
+          onBeforeStep: (n: string) => { ref.current = n },
+        },
+      )
+      return { state: r.state, signal: r.signal }
+    })()
+
+    const resumeFn = (r: unknown, i: string): RunHandle => makeAgentResumeHandle(r, sId, i)
+    return createRunHandle(sId, exec, flag, ref, resumeFn)
+  }
+
   // Create and return Agent with attached internals
   const agent: AgentWithInternals = {
     run: (initialState: Record<string, unknown>, resources: Record<string, unknown>): RunHandle => {
@@ -279,6 +320,9 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         onBeforeStep: (name: string) => { stepRef.current = name },
       }
 
+      // lastResult captures the LoopResult for same-process in-memory resume chaining
+      let lastResult: { state: Record<string, unknown>; cursor: string | null } | null = null
+
       // Launch execution asynchronously — agent.run() returns before any async work begins
       const execution = (async (): Promise<RunOutcome> => {
         // Yield so agent.run() can return the RunHandle before any loop iteration starts
@@ -292,14 +336,70 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           ctx,
           options,
         )
+        lastResult = { state: r.state, cursor: r.cursor }
         return { state: r.state, signal: r.signal }
       })()
 
-      return createRunHandle(sessionId, execution, stopFlag, stepRef)
+      // buildResumeFn — creates a recursive resumeFn for same-process chaining via run.resume()
+      const buildResumeFn = (): ((response: unknown, interruptId: string) => RunHandle) => {
+        return (response: unknown, interruptId: string): RunHandle => {
+          const resumeStopFlag = { stopped: false }
+          const resumeStepRef: { current: string | null } = { current: null }
+
+          const resumeExecution = (async (): Promise<RunOutcome> => {
+            await Promise.resolve()
+
+            if (capturedStore !== undefined) {
+              // Cross-process path: inject response into store, reload, and re-run
+              await injectInterruptResponse(capturedStore, sessionId, interruptId, response)
+              const r = await runWithSession(
+                capturedStore,
+                sessionId,
+                agentInternals.loopDef,
+                {},
+                agentInternals.stateSchema,
+                ctx,
+                {
+                  shouldStop: () => resumeStopFlag.stopped,
+                  onBeforeStep: (n: string) => { resumeStepRef.current = n },
+                },
+              )
+              lastResult = { state: r.state, cursor: r.cursor }
+              return { state: r.state, signal: r.signal }
+            }
+
+            // Same-process in-memory path: mutate shared state and re-run from cursor
+            const prev = lastResult
+            if (prev === null) throw new NoInterruptError()
+            const state = prev.state
+            const existing = (state.$interruptResponses as Record<string, unknown>) ?? {}
+            state.$interruptResponses = { ...existing, [interruptId]: response }
+            state.$interrupt = null
+            const cursor = prev.cursor ?? undefined
+            const r = await runLoop(
+              agentInternals.loopDef,
+              state,
+              ctx,
+              agentInternals.stateSchema,
+              () => resumeStopFlag.stopped,
+              (n: string) => { resumeStepRef.current = n },
+              cursor,
+            )
+            lastResult = { state: r.state, cursor: r.cursor }
+            return { state: r.state, signal: r.signal }
+          })()
+
+          return createRunHandle(sessionId, resumeExecution, resumeStopFlag, resumeStepRef, buildResumeFn())
+        }
+      }
+
+      return createRunHandle(sessionId, execution, stopFlag, stepRef, buildResumeFn())
     },
-    resume: () => {
-      throw new Error('not implemented — requires F9')
+
+    resume: (response: unknown, sessionId: string, interruptId: string): RunHandle => {
+      return makeAgentResumeHandle(response, sessionId, interruptId)
     },
+
     status: (sessionId: string) => querySessionPhase(capturedStore, sessionId),
     [_agentInternals]: agentInternals,
   }

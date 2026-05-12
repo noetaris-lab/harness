@@ -103,7 +103,7 @@ export async function runWithSession(
   await store.save(sessionId, { phase: 'in-flight', state: snapshot })
 
   // Execute — errors from runLoop propagate uncaught
-  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep)
+  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep, loaded?.step)
 
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {

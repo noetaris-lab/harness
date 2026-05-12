@@ -26,7 +26,10 @@ export type StepState<S> = S & FrameworkState
  */
 export type RunFn<S, Ctx> = (
   state: StepState<S>,
-  ctx: Ctx & { readonly sessionId: string },
+  ctx: Ctx & {
+    readonly sessionId: string
+    readonly interrupt: (prompt: unknown, id?: string) => Promise<unknown>
+  },
 ) => Promise<Partial<Omit<S, '$error' | '$interrupt'>>> | Partial<Omit<S, '$error' | '$interrupt'>>
 
 /**
