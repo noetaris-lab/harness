@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createInterruptFn, isInterruptPause, InterruptPause } from './ctx-interrupt.js'
+import { createInterruptFn, InterruptPause } from './ctx-interrupt.js'
 import { runLoop } from '../loop/loop-executor.js'
 import { runWithSession } from './session-lifecycle.js'
 import { createLoopBuilder, extractLoopDefinition } from '../loop/loop-dsl.js'
@@ -268,21 +268,26 @@ describe('runLoop', () => {
       expect(state.$interrupt).toEqual({ interruptId: 'ask-name', prompt: 'What is your name?' })
     })
 
-    it('re-throws non-InterruptPause errors', async () => {
+    it('routes non-InterruptPause errors via $error; does not rethrow', async () => {
       // arrange
       const graph = build(l => l.start()
         .step('broken', {
           run: async () => { throw new TypeError('bad input') },
-          route: () => 'done',
+          route: (s) => (s as any).$error !== null ? 'abort' : 'done',
         })
+        .on('abort').end()
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test' }
 
-      // act + assert
-      await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow(TypeError)
-      await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow('bad input')
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert — F10: non-interrupt errors are routed via $error, not re-thrown
+      expect(result.signal).toBe('abort')
+      expect(result.paused).toBe(false)
+      expect(result.state.$error).toBeInstanceOf(TypeError)
     })
 
   })

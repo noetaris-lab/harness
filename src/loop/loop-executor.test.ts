@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runLoop, UnknownSignalError, NoNextStepError } from './loop-executor.js'
 import { createLoopBuilder, extractLoopDefinition } from './loop-dsl.js'
 import type { LoopDefinition } from './loop-dsl.js'
@@ -37,7 +37,7 @@ describe('runLoop', () => {
       expect('$interrupt' in state).toBe(true)
     })
 
-    it('preserves existing $error and $interrupt when already set in state', async () => {
+    it('preserves existing $interrupt when already set in state; $error cleared by successful run', async () => {
       // arrange
       const priorError = new Error('previous failure')
       const runFn = vi.fn().mockResolvedValue({})
@@ -55,9 +55,9 @@ describe('runLoop', () => {
       // act
       await runLoop(graph, state, ctx, undefined)
 
-      // assert
-      expect(state.$error).toBe(priorError)
-      expect((state.$interrupt as any).interruptId).toBe('i1')
+      // assert — F10: $error is cleared after successful run; $interrupt is preserved
+      expect(state.$error).toBeNull()
+      expect((state.$interrupt as any /* any: state is untyped Record<string, unknown> */).interruptId).toBe('i1')
     })
 
   })
@@ -390,15 +390,30 @@ describe('runLoop', () => {
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow(UnknownSignalError)
+    })
 
-      let caught: UnknownSignalError | undefined
-      try {
-        await runLoop(graph, state, ctx, undefined)
-      } catch (e) {
-        caught = e as UnknownSignalError
+    it('UnknownSignalError carries correct step and signal properties', async () => {
+      // arrange
+      const routeFn = vi.fn().mockReturnValue('mystery')
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'suspect',
+        onError: undefined,
+        steps: [
+          {
+            name: 'suspect',
+            run: undefined,
+            route: routeFn,
+            transitions: [],
+            next: undefined,
+          },
+        ],
       }
-      expect(caught!.step).toBe('suspect')
-      expect(caught!.signal).toBe('mystery')
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act / assert
+      await expect(runLoop(graph, state, ctx, undefined)).rejects.toMatchObject({ step: 'suspect', signal: 'mystery' })
     })
 
   })
@@ -472,14 +487,30 @@ describe('runLoop', () => {
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow(NoNextStepError)
+    })
 
-      let caught: NoNextStepError | undefined
-      try {
-        await runLoop(graph, state, ctx, undefined)
-      } catch (e) {
-        caught = e as NoNextStepError
+    it('NoNextStepError carries correct step property', async () => {
+      // arrange
+      const runFn = vi.fn().mockResolvedValue({})
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'terminal',
+        onError: undefined,
+        steps: [
+          {
+            name: 'terminal',
+            run: runFn,
+            route: undefined,
+            transitions: [],
+            next: undefined,
+          },
+        ],
       }
-      expect(caught!.step).toBe('terminal')
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act / assert
+      await expect(runLoop(graph, state, ctx, undefined)).rejects.toMatchObject({ step: 'terminal' })
     })
 
   })
@@ -564,7 +595,7 @@ describe('runLoop', () => {
       const runWorker = vi.fn().mockResolvedValue({ result: 99 })
       const graph = build(l =>
         l.start()
-         .step('check', { route: (s) => (s as any).flag ? 'fast' : 'slow' })
+         .step('check', { route: (s) => (s as any /* any: state is untyped Record<string, unknown> */).flag ? 'fast' : 'slow' })
          .on('fast').to('worker')
          .on('slow').to('worker')
          .step('worker', { run: runWorker, route: () => 'done' })
@@ -727,20 +758,679 @@ describe('runLoop', () => {
 
   describe('step.run throw propagation', () => {
 
-    it('unhandled throw from step.run rejects the runLoop promise and leaves state unchanged', async () => {
+    it('throw from step.run resolves with $error signal when route handles it; state preserved', async () => {
       // arrange
       const failingRun = vi.fn().mockRejectedValue(new Error('step failure'))
       const graph = build(l =>
         l.start()
-         .step('boom', { run: failingRun, route: () => 'done' })
+         .step('boom', { run: failingRun, route: (s) => (s as any /* any: state is untyped Record<string, unknown> */).$error !== null ? 'abort' : 'done' })
+         .on('abort').end()
          .on('done').end()
       )
       const state: Record<string, unknown> = { existing: 'value' }
       const ctx = { sessionId: 'test-session' }
 
-      // act / assert
-      await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow('step failure')
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('abort')
+      expect(result.paused).toBe(false)
       expect(state.existing).toBe('value')
+    })
+
+  })
+
+  describe('$error field lifecycle on run throw', () => {
+
+    it('sets $error to the thrown Error instance when run throws; partial update discarded', async () => {
+      // arrange
+      const thrownError = new Error('quota exceeded')
+      const runFn = vi.fn().mockRejectedValue(thrownError)
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'throw_step',
+        onError: undefined,
+        steps: [{
+          name: 'throw_step',
+          run: runFn,
+          route: undefined,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = { count: 0 }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.paused).toBe(true)
+      expect(result.signal).toBe('$error')
+      expect(result.cursor).toBe('throw_step')
+      expect(result.state.$error).toBe(thrownError)
+      expect(result.state.count).toBe(0)
+    })
+
+    it('does not apply any state mutation when run throws mid-execution', async () => {
+      // arrange
+      const runFn = vi.fn().mockImplementation(async () => {
+        throw new Error('mid-run failure')
+      })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'partial_step',
+        onError: undefined,
+        steps: [{
+          name: 'partial_step',
+          run: runFn,
+          route: undefined,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = { value: 'original' }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.state.value).toBe('original')
+      expect(result.state.$error).toBeInstanceOf(Error)
+      expect((result.state.$error as Error).message).toBe('mid-run failure')
+    })
+
+    it('wraps a non-Error thrown value in new Error(String(value))', async () => {
+      // arrange
+      const runFn = vi.fn().mockImplementation(async () => { throw 'oops' })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'string_throw',
+        onError: undefined,
+        steps: [{
+          name: 'string_throw',
+          run: runFn,
+          route: undefined,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.state.$error).toBeInstanceOf(Error)
+      expect((result.state.$error as Error).message).toBe('oops')
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+    })
+
+  })
+
+  describe('InterruptPause does not trigger error path', () => {
+
+    it('InterruptPause throw does not set $error and pauses with signal "$interrupt"', async () => {
+      // arrange
+      const graph = build(l =>
+        l.start()
+         .step('interruptible', {
+           run: async (_s: Record<string, unknown>, ctx: Record<string, unknown> & { sessionId: string }) => {
+             await (ctx as any /* any: interrupt is dynamically injected by runLoop, not in the static ctx type */).interrupt('confirm?', 'i1')
+             return {}
+           },
+           route: () => 'done',
+         })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('$interrupt')
+      expect(result.paused).toBe(true)
+      expect(result.state.$error).toBeNull()
+      expect(result.state.$interrupt).not.toBeNull()
+    })
+
+  })
+
+  describe('$error cleared after successful run; decision nodes do not clear', () => {
+
+    it('route sees $error === null when run succeeds after a prior error', async () => {
+      // arrange
+      let capturedError: unknown = 'NOT_SET'
+      const runFn = vi.fn().mockResolvedValue({})
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        capturedError = s.$error
+        return 'done'
+      })
+      const graph = build(l =>
+        l.start()
+         .step('recover', { run: runFn, route: routeFn })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = { $error: new Error('prior failure') }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(capturedError).toBeNull()
+      expect(routeFn).toHaveBeenCalledOnce()
+    })
+
+    it('decision node (route-only) does not clear $error; route sees $error still set', async () => {
+      // arrange
+      let capturedErrorInDecision: unknown = 'NOT_SET'
+      const graph = build(l =>
+        l.start()
+         .step('decision', {
+           route: (s: Record<string, unknown>) => {
+             capturedErrorInDecision = s.$error
+             return 'go'
+           },
+         })
+         .on('go').to('worker')
+         .step('worker', { run: vi.fn().mockResolvedValue({}), route: () => 'done' })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = { $error: new Error('lingering error') }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(capturedErrorInDecision).toBeInstanceOf(Error)
+      expect((capturedErrorInDecision as Error).message).toBe('lingering error')
+    })
+
+  })
+
+  describe('per-step route handling of $error', () => {
+
+    it('route returns error-aware signal that matches .on().to(); cursor advances to target', async () => {
+      // arrange
+      const throwingRun = vi.fn().mockRejectedValue(new Error('quota exceeded'))
+      let capturedRouteError: unknown = 'NOT_SET'
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        capturedRouteError = s.$error
+        return s.$error !== null ? 'retry' : 'continue'
+      })
+      const recoverRun = vi.fn().mockResolvedValue({ recovered: true })
+      const graph = build(l =>
+        l.start()
+         .step('think', { run: throwingRun, route: routeFn })
+         .on('retry').to('recover')
+         .on('continue').to('recover')
+         .step('recover', { run: recoverRun, route: () => 'done' })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(throwingRun).toHaveBeenCalledOnce()
+      expect(routeFn).toHaveBeenCalledOnce()
+      expect(capturedRouteError).toBeInstanceOf(Error)
+      expect(recoverRun).toHaveBeenCalledOnce()
+      expect(result.signal).toBe('done')
+      expect(result.paused).toBe(false)
+    })
+
+    it('route returns a signal matched by .on().end() on error path; resolves with that signal; $error remains in state', async () => {
+      // arrange
+      const thrownError = new Error('fatal failure')
+      const runFn = vi.fn().mockRejectedValue(thrownError)
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        return s.$error !== null ? 'fatal' : 'continue'
+      })
+      const graph = build(l =>
+        l.start()
+         .step('action', { run: runFn, route: routeFn })
+         .on('fatal').end()
+         .on('continue').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('fatal')
+      expect(result.paused).toBe(false)
+      expect(result.cursor).toBeNull()
+      expect(result.state.$error).toBe(thrownError)
+    })
+
+    it('route returns an unhandled signal after run throws → UnknownSignalError thrown', async () => {
+      // arrange
+      const runFn = vi.fn().mockRejectedValue(new Error('step failed'))
+      const routeFn = vi.fn().mockReturnValue('unknown_signal')
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'flawed',
+        onError: undefined,
+        steps: [{
+          name: 'flawed',
+          run: runFn,
+          route: routeFn,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const err = await runLoop(graph, state, ctx, undefined).catch(e => e)
+
+      // assert
+      expect(err).toBeInstanceOf(UnknownSignalError)
+      expect(err.step).toBe('flawed')
+      expect(err.signal).toBe('unknown_signal')
+    })
+
+  })
+
+  describe('l.onError() fallback', () => {
+
+    it('step with no route and l.onError() declared: cursor moves to onError step; execution continues', async () => {
+      // arrange
+      const throwingRun = vi.fn().mockRejectedValue(new Error('worker failed'))
+      const handlerRun = vi.fn().mockResolvedValue({ handled: true })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'worker',
+        onError: 'handle_error',
+        steps: [
+          { name: 'worker', run: throwingRun, route: undefined, transitions: [], next: undefined },
+          { name: 'handle_error', run: handlerRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(throwingRun).toHaveBeenCalledOnce()
+      expect(handlerRun).toHaveBeenCalledOnce()
+      expect(result.signal).toBe('done')
+      expect(result.paused).toBe(false)
+      expect(result.state.$error).toBeNull()
+    })
+
+    it('step with no route and no l.onError(): resolves with signal "$error" and paused: true', async () => {
+      // arrange
+      const thrownError = new Error('unhandled domain error')
+      const runFn = vi.fn().mockRejectedValue(thrownError)
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'no_handler',
+        onError: undefined,
+        steps: [{
+          name: 'no_handler',
+          run: runFn,
+          route: undefined,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = { count: 5 }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+      expect(result.cursor).toBe('no_handler')
+      expect(result.state.$error).toBe(thrownError)
+      expect(result.state.count).toBe(5)
+    })
+
+    it('step with route ignoring $error takes full precedence; l.onError() step is never reached', async () => {
+      // arrange
+      const throwingRun = vi.fn().mockRejectedValue(new Error('domain error'))
+      const routeFn = vi.fn().mockReturnValue('continue')
+      const handleErrorRun = vi.fn().mockResolvedValue({})
+      const nextRun = vi.fn().mockResolvedValue({})
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'work',
+        onError: 'handle_error',
+        steps: [
+          { name: 'work', run: throwingRun, route: routeFn,
+            transitions: [{ signal: 'continue', target: { kind: 'step', name: 'next_step' } }],
+            next: undefined },
+          { name: 'next_step', run: nextRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+          { name: 'handle_error', run: handleErrorRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(throwingRun).toHaveBeenCalledOnce()
+      expect(routeFn).toHaveBeenCalledOnce()
+      expect(nextRun).toHaveBeenCalledOnce()
+      expect(handleErrorRun).not.toHaveBeenCalled()
+      expect(result.signal).toBe('done')
+    })
+
+  })
+
+  describe('shouldStop() interaction with error path', () => {
+
+    it('shouldStop() is not consulted when run throws; error routing proceeds regardless', async () => {
+      // arrange
+      const runFn = vi.fn().mockRejectedValue(new Error('domain failure'))
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'work',
+        onError: undefined,
+        steps: [{ name: 'work', run: runFn, route: undefined, transitions: [], next: undefined }],
+      }
+      const shouldStop = vi.fn().mockReturnValue(false)
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, shouldStop)
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+      expect(shouldStop).toHaveBeenCalledOnce()
+      expect(result.state.$error).toBeInstanceOf(Error)
+    })
+
+    it('shouldStop() checked normally at next iteration top after successful step; $error remains null', async () => {
+      // arrange
+      const runA = vi.fn().mockResolvedValue({})
+      const runB = vi.fn().mockResolvedValue({})
+      const graph = build(l =>
+        l.start()
+         .step('A', { run: runA })
+         .step('B', { run: runB, route: () => 'done' })
+         .on('done').end()
+      )
+      const shouldStop = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, shouldStop)
+
+      // assert
+      expect(result.paused).toBe(true)
+      expect(result.signal).toBeNull()
+      expect(result.cursor).toBe('B')
+      expect(result.state.$error).toBeNull()
+      expect(runB).not.toHaveBeenCalled()
+    })
+
+  })
+
+  describe('route throwing (defensive catch)', () => {
+
+    it('route throws after successful run: state update stands; $error set to route error; paused: true', async () => {
+      // arrange
+      const routeError = new Error('route failure')
+      const runFn = vi.fn().mockResolvedValue({ count: 10 })
+      const routeFn = vi.fn().mockImplementation(() => { throw routeError })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'action',
+        onError: undefined,
+        steps: [{
+          name: 'action',
+          run: runFn,
+          route: routeFn,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = { count: 0 }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+      expect(result.cursor).toBe('action')
+      expect(result.state.$error).toBe(routeError)
+      expect(result.state.count).toBe(10)
+    })
+
+    it('run throws then route also throws: $error overwritten with route error; paused: true', async () => {
+      // arrange
+      const runError = new Error('run failure')
+      const routeError = new Error('route failure')
+      const runFn = vi.fn().mockRejectedValue(runError)
+      let capturedRunError: unknown = 'NOT_SET'
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        capturedRunError = s.$error
+        throw routeError
+      })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'double_fail',
+        onError: undefined,
+        steps: [{
+          name: 'double_fail',
+          run: runFn,
+          route: routeFn,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+      expect(result.state.$error).toBe(routeError)
+      expect(result.state.$error).not.toBe(runError)
+      expect(routeFn).toHaveBeenCalledOnce()
+      expect(capturedRunError).toBe(runError)
+    })
+
+  })
+
+  describe('recovery step behavior', () => {
+
+    it('recovery step run succeeds; $error cleared; subsequent steps see null', async () => {
+      // arrange
+      const failRun = vi.fn().mockRejectedValue(new Error('initial error'))
+      const handlerRun = vi.fn().mockResolvedValue({})
+      let capturedErrorInContinue: unknown = 'NOT_SET'
+      const continueRun = vi.fn().mockImplementation(async (s: Record<string, unknown>) => {
+        capturedErrorInContinue = s.$error
+        return {}
+      })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'fail_step',
+        onError: 'handle_error',
+        steps: [
+          { name: 'fail_step', run: failRun, route: undefined, transitions: [], next: undefined },
+          { name: 'handle_error', run: handlerRun, route: () => 'next',
+            transitions: [{ signal: 'next', target: { kind: 'step', name: 'continue_step' } }], next: undefined },
+          { name: 'continue_step', run: continueRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(capturedErrorInContinue).toBeNull()
+      expect(result.signal).toBe('done')
+    })
+
+    it('recovery step run also throws; $error updated; routes via its route to bail out', async () => {
+      // arrange
+      const workError = new Error('work failed')
+      const handlerError = new Error('handler also failed')
+      const workRun = vi.fn().mockRejectedValue(workError)
+      const handlerRun = vi.fn().mockRejectedValue(handlerError)
+      const handleRoute = vi.fn().mockReturnValue('bail')
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'work',
+        onError: 'handle_error',
+        steps: [
+          { name: 'work', run: workRun, route: undefined, transitions: [], next: undefined },
+          { name: 'handle_error', run: handlerRun, route: handleRoute,
+            transitions: [{ signal: 'bail', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(workRun).toHaveBeenCalledOnce()
+      expect(handlerRun).toHaveBeenCalledOnce()
+      expect(handleRoute).toHaveBeenCalledOnce()
+      expect(handleRoute).toHaveBeenCalledWith(expect.objectContaining({ $error: handlerError }))
+      expect(result.signal).toBe('bail')
+      expect(result.state.$error).toBe(handlerError)
+    })
+
+  })
+
+  describe('$interruptResponses not affected by error path', () => {
+
+    it('$interruptResponses is not cleared when run throws', async () => {
+      // arrange
+      const runFn = vi.fn().mockRejectedValue(new Error('step failed during resume'))
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'resume_step',
+        onError: undefined,
+        steps: [{
+          name: 'resume_step',
+          run: runFn,
+          route: undefined,
+          transitions: [],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = {
+        $interruptResponses: { 'i1': 'user response' },
+      }
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.state.$interruptResponses).toEqual({ 'i1': 'user response' })
+      expect(result.state.$error).toBeInstanceOf(Error)
+      expect(result.signal).toBe('$error')
+    })
+
+  })
+
+  describe('full loop sequences with error routing', () => {
+
+    it('A throws → onError to B → B succeeds → B routes to C → C ends; resolves cleanly', async () => {
+      // arrange
+      const runA = vi.fn().mockRejectedValue(new Error('A failed'))
+      const runB = vi.fn().mockResolvedValue({ recovered: true })
+      const runC = vi.fn().mockResolvedValue({ final: true })
+      let capturedBState: Record<string, unknown> | null = null
+      const routeB = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        capturedBState = { ...s }
+        return 'next'
+      })
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'A',
+        onError: 'B',
+        steps: [
+          { name: 'A', run: runA, route: undefined, transitions: [], next: undefined },
+          { name: 'B', run: runB, route: routeB,
+            transitions: [{ signal: 'next', target: { kind: 'step', name: 'C' } }], next: undefined },
+          { name: 'C', run: runC, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(runA).toHaveBeenCalledOnce()
+      expect(runB).toHaveBeenCalledOnce()
+      expect(runC).toHaveBeenCalledOnce()
+      expect(capturedBState!.$error).toBeNull()
+      expect(result.signal).toBe('done')
+      expect(result.paused).toBe(false)
+      expect(result.cursor).toBeNull()
+    })
+
+    it('run throws; route exits with a custom signal; $error remains in LoopResult.state', async () => {
+      // arrange
+      const thrownError = new Error('domain throw treated as complete')
+      const runFn = vi.fn().mockRejectedValue(thrownError)
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => {
+        return s.$error !== null ? 'complete' : 'normal'
+      })
+      const graph = build(l =>
+        l.start()
+         .step('A', { run: runFn, route: routeFn })
+         .on('complete').end()
+         .on('normal').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert
+      expect(result.signal).toBe('complete')
+      expect(result.paused).toBe(false)
+      expect(result.cursor).toBeNull()
+      expect(result.state.$error).toBe(thrownError)
     })
 
   })

@@ -108,6 +108,8 @@ export async function runLoop(
     // reset per-step counter before run (even for decision nodes, per design)
     callCountRef.current = 0
 
+    let runSucceeded = false
+
     if (step.run !== undefined) {
       // capture whether responses exist before the run; only clear interrupt state if they did
       const hadResponses = Object.keys(state.$interruptResponses as Record<string, unknown>).length > 0
@@ -122,15 +124,31 @@ export async function runLoop(
           state.$interrupt = null
           state.$interruptResponses = {}
         }
+        runSucceeded = true
       } catch (e) {
-        if (!isInterruptPause(e)) throw e
-        // InterruptPause was caught: $interrupt already written by createInterruptFn
-        return { state, signal: '$interrupt', cursor, paused: true }
+        if (isInterruptPause(e)) {
+          // InterruptPause was caught: $interrupt already written by createInterruptFn
+          return { state, signal: '$interrupt', cursor, paused: true }
+        }
+        // domain error: normalize to Error and set $error; do not rethrow
+        state.$error = e instanceof Error ? e : new Error(String(e))
       }
     }
 
+    if (runSucceeded) {
+      // clear $error after a successful run, before calling route
+      state.$error = null
+    }
+
     if (step.route !== undefined) {
-      const signal = step.route(state as unknown as Parameters<typeof step.route>[0])
+      let signal: string
+      try {
+        signal = step.route(state as unknown as Parameters<typeof step.route>[0])
+      } catch (e) {
+        // route itself threw — treat as terminal error; state update from run already stands
+        state.$error = e instanceof Error ? e : new Error(String(e))
+        return { state, signal: '$error', cursor, paused: true }
+      }
       const transition = step.transitions.find(t => t.signal === signal)
       if (transition === undefined) {
         throw new UnknownSignalError(cursor, signal)
@@ -139,6 +157,13 @@ export async function runLoop(
         return { state, signal, cursor: null, paused: false }
       }
       cursor = transition.target.name
+    } else if (step.run !== undefined && !runSucceeded) {
+      // run threw, no route: apply l.onError() fallback or pause
+      if (graph.onError !== undefined) {
+        cursor = graph.onError
+      } else {
+        return { state, signal: '$error', cursor, paused: true }
+      }
     } else {
       const next = step.next ?? implicitNextMap.get(cursor) ?? null
       if (next === null) {
