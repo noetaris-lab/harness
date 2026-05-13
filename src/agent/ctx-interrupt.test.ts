@@ -277,6 +277,7 @@ describe('runLoop', () => {
         })
         .on('abort').end()
         .on('done').end()
+        .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test' }

@@ -140,7 +140,13 @@ export async function runLoop(
       state.$error = null
     }
 
-    if (step.route !== undefined) {
+    // route is called when: route exists AND (run succeeded, step has no run, OR step opts in
+    // to error routing by declaring an .on("$error") transition)
+    const callRoute =
+      step.route !== undefined &&
+      (runSucceeded || step.run === undefined || step.transitions.some(t => t.signal === '$error'))
+
+    if (callRoute) {
       let signal: string
       try {
         signal = step.route(state as unknown as Parameters<typeof step.route>[0])
@@ -158,7 +164,7 @@ export async function runLoop(
       }
       cursor = transition.target.name
     } else if (step.run !== undefined && !runSucceeded) {
-      // run threw, no route: apply l.onError() fallback or pause
+      // run threw, route bypassed (not error-aware) or no route: apply l.onError() fallback or pause
       if (graph.onError !== undefined) {
         cursor = graph.onError
       } else {

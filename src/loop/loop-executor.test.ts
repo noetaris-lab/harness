@@ -758,14 +758,16 @@ describe('runLoop', () => {
 
   describe('step.run throw propagation', () => {
 
-    it('throw from step.run resolves with $error signal when route handles it; state preserved', async () => {
+    it('throw from step.run resolves with $error signal when route opts in via .on("$error") and handles it; state preserved', async () => {
       // arrange
       const failingRun = vi.fn().mockRejectedValue(new Error('step failure'))
       const graph = build(l =>
         l.start()
+         // .on('$error') declares opt-in: route is called even when run throws
          .step('boom', { run: failingRun, route: (s) => (s as any /* any: state is untyped Record<string, unknown> */).$error !== null ? 'abort' : 'done' })
          .on('abort').end()
          .on('done').end()
+         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = { existing: 'value' }
       const ctx = { sessionId: 'test-session' }
@@ -958,7 +960,7 @@ describe('runLoop', () => {
 
   describe('per-step route handling of $error', () => {
 
-    it('route returns error-aware signal that matches .on().to(); cursor advances to target', async () => {
+    it('route opted in via .on("$error"): returns error-aware signal matching .on().to(); cursor advances to target', async () => {
       // arrange
       const throwingRun = vi.fn().mockRejectedValue(new Error('quota exceeded'))
       let capturedRouteError: unknown = 'NOT_SET'
@@ -972,6 +974,7 @@ describe('runLoop', () => {
          .step('think', { run: throwingRun, route: routeFn })
          .on('retry').to('recover')
          .on('continue').to('recover')
+         .on('$error').to('recover')  // opt-in: route is called on error path
          .step('recover', { run: recoverRun, route: () => 'done' })
          .on('done').end()
       )
@@ -990,7 +993,7 @@ describe('runLoop', () => {
       expect(result.paused).toBe(false)
     })
 
-    it('route returns a signal matched by .on().end() on error path; resolves with that signal; $error remains in state', async () => {
+    it('route opted in via .on("$error"): returns signal matched by .on().end(); resolves with that signal; $error remains in state', async () => {
       // arrange
       const thrownError = new Error('fatal failure')
       const runFn = vi.fn().mockRejectedValue(thrownError)
@@ -1002,6 +1005,7 @@ describe('runLoop', () => {
          .step('action', { run: runFn, route: routeFn })
          .on('fatal').end()
          .on('continue').end()
+         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test-session' }
@@ -1016,8 +1020,38 @@ describe('runLoop', () => {
       expect(result.state.$error).toBe(thrownError)
     })
 
-    it('route returns an unhandled signal after run throws → UnknownSignalError thrown', async () => {
-      // arrange
+    it('route WITHOUT .on("$error") opt-in: route is bypassed when run throws; pauses with $error', async () => {
+      // arrange — route always returns 'continue' but step has no .on('$error') opt-in
+      const runFn = vi.fn().mockRejectedValue(new Error('step failed'))
+      const routeFn = vi.fn().mockReturnValue('continue')
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'work',
+        onError: undefined,
+        steps: [{
+          name: 'work',
+          run: runFn,
+          route: routeFn,
+          transitions: [{ signal: 'continue', target: { kind: 'step', name: 'work' } }],
+          next: undefined,
+        }],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert — route was NOT called; error fell through to $error pause
+      expect(routeFn).not.toHaveBeenCalled()
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(true)
+      expect(result.cursor).toBe('work')
+      expect(result.state.$error).toBeInstanceOf(Error)
+    })
+
+    it('route opted in via .on("$error") returns an unhandled signal after run throws → UnknownSignalError thrown', async () => {
+      // arrange — step opts in but route returns a signal with no matching transition
       const runFn = vi.fn().mockRejectedValue(new Error('step failed'))
       const routeFn = vi.fn().mockReturnValue('unknown_signal')
       const graph: LoopDefinition = {
@@ -1028,7 +1062,7 @@ describe('runLoop', () => {
           name: 'flawed',
           run: runFn,
           route: routeFn,
-          transitions: [],
+          transitions: [{ signal: '$error', target: { kind: 'end' } }],  // opt-in only
           next: undefined,
         }],
       }
@@ -1106,8 +1140,8 @@ describe('runLoop', () => {
       expect(result.state.count).toBe(5)
     })
 
-    it('step with route ignoring $error takes full precedence; l.onError() step is never reached', async () => {
-      // arrange
+    it('step with route WITHOUT .on("$error") opt-in: route bypassed; l.onError() step IS reached', async () => {
+      // arrange — route returns 'continue' blindly but has no .on('$error') opt-in
       const throwingRun = vi.fn().mockRejectedValue(new Error('domain error'))
       const routeFn = vi.fn().mockReturnValue('continue')
       const handleErrorRun = vi.fn().mockResolvedValue({})
@@ -1132,7 +1166,46 @@ describe('runLoop', () => {
       // act
       const result = await runLoop(graph, state, ctx, undefined)
 
-      // assert
+      // assert — route was NOT called; l.onError() step was reached instead
+      expect(throwingRun).toHaveBeenCalledOnce()
+      expect(routeFn).not.toHaveBeenCalled()
+      expect(nextRun).not.toHaveBeenCalled()
+      expect(handleErrorRun).toHaveBeenCalledOnce()
+      expect(result.signal).toBe('done')
+    })
+
+    it('step with route WITH .on("$error") opt-in and l.onError(): route takes precedence; l.onError() step NOT reached', async () => {
+      // arrange — route opts in via .on('$error') and handles error by routing to 'next_step'
+      const throwingRun = vi.fn().mockRejectedValue(new Error('domain error'))
+      const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) =>
+        s.$error !== null ? 'continue' : 'continue'
+      )
+      const handleErrorRun = vi.fn().mockResolvedValue({})
+      const nextRun = vi.fn().mockResolvedValue({})
+      const graph: LoopDefinition = {
+        startCalled: true,
+        entryStep: 'work',
+        onError: 'handle_error',
+        steps: [
+          { name: 'work', run: throwingRun, route: routeFn,
+            transitions: [
+              { signal: 'continue', target: { kind: 'step', name: 'next_step' } },
+              { signal: '$error', target: { kind: 'end' } },  // opt-in declaration
+            ],
+            next: undefined },
+          { name: 'next_step', run: nextRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+          { name: 'handle_error', run: handleErrorRun, route: () => 'done',
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+        ],
+      }
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test-session' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined)
+
+      // assert — route WAS called; l.onError() step was NOT reached
       expect(throwingRun).toHaveBeenCalledOnce()
       expect(routeFn).toHaveBeenCalledOnce()
       expect(nextRun).toHaveBeenCalledOnce()
@@ -1227,7 +1300,7 @@ describe('runLoop', () => {
       expect(result.state.count).toBe(10)
     })
 
-    it('run throws then route also throws: $error overwritten with route error; paused: true', async () => {
+    it('run throws then route also throws (route opted in via .on("$error")): $error overwritten with route error; paused: true', async () => {
       // arrange
       const runError = new Error('run failure')
       const routeError = new Error('route failure')
@@ -1245,7 +1318,7 @@ describe('runLoop', () => {
           name: 'double_fail',
           run: runFn,
           route: routeFn,
-          transitions: [],
+          transitions: [{ signal: '$error', target: { kind: 'end' } }],  // opt-in
           next: undefined,
         }],
       }
@@ -1300,7 +1373,7 @@ describe('runLoop', () => {
       expect(result.signal).toBe('done')
     })
 
-    it('recovery step run also throws; $error updated; routes via its route to bail out', async () => {
+    it('recovery step run also throws; $error updated; routes via its route (opted in) to bail out', async () => {
       // arrange
       const workError = new Error('work failed')
       const handlerError = new Error('handler also failed')
@@ -1314,7 +1387,10 @@ describe('runLoop', () => {
         steps: [
           { name: 'work', run: workRun, route: undefined, transitions: [], next: undefined },
           { name: 'handle_error', run: handlerRun, route: handleRoute,
-            transitions: [{ signal: 'bail', target: { kind: 'end' } }], next: undefined },
+            transitions: [
+              { signal: 'bail', target: { kind: 'end' } },
+              { signal: '$error', target: { kind: 'end' } },  // opt-in: route called when this step's run throws
+            ], next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1407,7 +1483,7 @@ describe('runLoop', () => {
       expect(result.cursor).toBeNull()
     })
 
-    it('run throws; route exits with a custom signal; $error remains in LoopResult.state', async () => {
+    it('run throws; route opted in via .on("$error") exits with a custom signal; $error remains in LoopResult.state', async () => {
       // arrange
       const thrownError = new Error('domain throw treated as complete')
       const runFn = vi.fn().mockRejectedValue(thrownError)
@@ -1419,6 +1495,7 @@ describe('runLoop', () => {
          .step('A', { run: runFn, route: routeFn })
          .on('complete').end()
          .on('normal').end()
+         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test-session' }
