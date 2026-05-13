@@ -272,12 +272,12 @@ describe('runLoop', () => {
       // arrange
       const graph = build(l => l.start()
         .step('broken', {
+          optin: '$error',
           run: async () => { throw new TypeError('bad input') },
           route: (s) => (s as any).$error !== null ? 'abort' : 'done',
         })
         .on('abort').end()
         .on('done').end()
-        .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test' }

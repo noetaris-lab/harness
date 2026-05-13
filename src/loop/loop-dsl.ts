@@ -33,16 +33,39 @@ export type RunFn<S, Ctx> = (
 ) => Promise<Partial<Omit<S, '$error' | '$interrupt'>>> | Partial<Omit<S, '$error' | '$interrupt'>>
 
 /**
- * Pure signal emitter. Receives the full step state (post-run); returns a string signal.
- * No ctx — pure read only. Synchronous by design.
+ * Pure signal emitter. Receives step state without $error — the route is not called on the error
+ * path unless the step opts in via `optin: '$error'` in the step config. Synchronous by design.
+ * No ctx — pure read only.
  */
-export type RouteFn<S> = (state: StepState<S>) => string
+export type RouteFn<S> = (state: S & Omit<FrameworkState, '$error'>) => string
 
-/** Options passed to `.step(name, options)`. At least one of `run` or `route` must be set. */
-export interface StepOptions<S, Ctx> {
-  run?: RunFn<S, Ctx>
-  route?: RouteFn<S>
-}
+/**
+ * Pure signal emitter for error-aware steps (optin: '$error').
+ * Receives the full step state including $error — the executor calls this on both the success
+ * and error paths. Declare `optin: '$error'` in the step config to use this variant.
+ */
+export type ErrorAwareRouteFn<S> = (state: StepState<S>) => string
+
+/**
+ * Options passed to `.step(name, options)`. At least one of `run` or `route` must be set.
+ *
+ * Two variants:
+ * - Without `optin`: route receives state without `$error` (TypeScript-enforced). On error,
+ *   the framework falls through to `l.onError()` or pauses with `signal: "$error"` automatically.
+ * - With `optin: '$error'`: route receives the full state including `$error`, and the executor
+ *   calls route on the error path. Use this when the step's route needs to inspect or handle errors.
+ */
+export type StepOptions<S, Ctx> =
+  | {
+      readonly optin: '$error'
+      run?: RunFn<S, Ctx>
+      route?: ErrorAwareRouteFn<S>
+    }
+  | {
+      readonly optin?: undefined
+      run?: RunFn<S, Ctx>
+      route?: RouteFn<S>
+    }
 
 // -----------------------------------------------------------------------
 // LoopDefinition — the captured topology produced by the builder
@@ -68,6 +91,8 @@ export interface SignalTransition {
  * run and route are stored as-is (user functions — validated structurally, not semantically).
  * transitions: all .on() declarations attached to this step.
  * next: explicit .next(name) target, or undefined if none declared.
+ * errorAware: true when the step was declared with optin: '$error' — the executor calls route
+ *   on the error path when this is true.
  */
 export interface StepDef {
   readonly name: string
@@ -75,6 +100,7 @@ export interface StepDef {
   readonly route: RouteFn<unknown> | undefined
   readonly transitions: readonly SignalTransition[]
   readonly next: string | undefined
+  readonly errorAware: boolean
 }
 
 /**
@@ -162,6 +188,7 @@ interface StepDefMutable {
   route: RouteFn<unknown> | undefined
   transitions: SignalTransition[]
   next: string | undefined
+  errorAware: boolean
 }
 
 // Internal mutable builder state
@@ -210,6 +237,7 @@ export function createLoopBuilder<S, Ctx>(): LoopBuilder<S, Ctx> {
         route: options.route as RouteFn<unknown> | undefined, // as: contravariance in state parameter
         transitions: [],
         next: undefined,
+        errorAware: options.optin === '$error',
       }
       state.steps.push(stepDef)
 
@@ -300,6 +328,7 @@ export function extractLoopDefinition(builder: LoopBuilder<unknown, unknown>): L
       route: step.route,
       transitions,
       next: step.next,
+      errorAware: step.errorAware,
     }
     return Object.freeze(stepDef)
   })

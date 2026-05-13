@@ -381,6 +381,7 @@ describe('runLoop', () => {
             run: undefined,
             route: routeFn,
             transitions: [],
+            errorAware: false,
             next: undefined,
           },
         ],
@@ -405,6 +406,7 @@ describe('runLoop', () => {
             run: undefined,
             route: routeFn,
             transitions: [],
+            errorAware: false,
             next: undefined,
           },
         ],
@@ -478,6 +480,7 @@ describe('runLoop', () => {
             run: runFn,
             route: undefined,
             transitions: [],
+            errorAware: false,
             next: undefined,
           },
         ],
@@ -502,6 +505,7 @@ describe('runLoop', () => {
             run: runFn,
             route: undefined,
             transitions: [],
+            errorAware: false,
             next: undefined,
           },
         ],
@@ -758,16 +762,15 @@ describe('runLoop', () => {
 
   describe('step.run throw propagation', () => {
 
-    it('throw from step.run resolves with $error signal when route opts in via .on("$error") and handles it; state preserved', async () => {
+    it('throw from step.run resolves with $error signal when route opts in via optin: "$error" and handles it; state preserved', async () => {
       // arrange
       const failingRun = vi.fn().mockRejectedValue(new Error('step failure'))
       const graph = build(l =>
         l.start()
-         // .on('$error') declares opt-in: route is called even when run throws
-         .step('boom', { run: failingRun, route: (s) => (s as any /* any: state is untyped Record<string, unknown> */).$error !== null ? 'abort' : 'done' })
+         // optin: '$error' declares opt-in: route is called even when run throws
+         .step('boom', { optin: '$error', run: failingRun, route: (s) => (s as any /* any: state is untyped Record<string, unknown> */).$error !== null ? 'abort' : 'done' })
          .on('abort').end()
          .on('done').end()
-         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = { existing: 'value' }
       const ctx = { sessionId: 'test-session' }
@@ -798,6 +801,7 @@ describe('runLoop', () => {
           run: runFn,
           route: undefined,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -829,6 +833,7 @@ describe('runLoop', () => {
           run: runFn,
           route: undefined,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -856,6 +861,7 @@ describe('runLoop', () => {
           run: runFn,
           route: undefined,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -960,7 +966,7 @@ describe('runLoop', () => {
 
   describe('per-step route handling of $error', () => {
 
-    it('route opted in via .on("$error"): returns error-aware signal matching .on().to(); cursor advances to target', async () => {
+    it('route opted in via optin: "$error": returns error-aware signal matching .on().to(); cursor advances to target', async () => {
       // arrange
       const throwingRun = vi.fn().mockRejectedValue(new Error('quota exceeded'))
       let capturedRouteError: unknown = 'NOT_SET'
@@ -971,10 +977,9 @@ describe('runLoop', () => {
       const recoverRun = vi.fn().mockResolvedValue({ recovered: true })
       const graph = build(l =>
         l.start()
-         .step('think', { run: throwingRun, route: routeFn })
+         .step('think', { optin: '$error', run: throwingRun, route: routeFn })
          .on('retry').to('recover')
          .on('continue').to('recover')
-         .on('$error').to('recover')  // opt-in: route is called on error path
          .step('recover', { run: recoverRun, route: () => 'done' })
          .on('done').end()
       )
@@ -993,7 +998,7 @@ describe('runLoop', () => {
       expect(result.paused).toBe(false)
     })
 
-    it('route opted in via .on("$error"): returns signal matched by .on().end(); resolves with that signal; $error remains in state', async () => {
+    it('route opted in via optin: "$error": returns signal matched by .on().end(); resolves with that signal; $error remains in state', async () => {
       // arrange
       const thrownError = new Error('fatal failure')
       const runFn = vi.fn().mockRejectedValue(thrownError)
@@ -1002,10 +1007,9 @@ describe('runLoop', () => {
       })
       const graph = build(l =>
         l.start()
-         .step('action', { run: runFn, route: routeFn })
+         .step('action', { optin: '$error', run: runFn, route: routeFn })
          .on('fatal').end()
          .on('continue').end()
-         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test-session' }
@@ -1033,6 +1037,7 @@ describe('runLoop', () => {
           run: runFn,
           route: routeFn,
           transitions: [{ signal: 'continue', target: { kind: 'step', name: 'work' } }],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -1050,7 +1055,7 @@ describe('runLoop', () => {
       expect(result.state.$error).toBeInstanceOf(Error)
     })
 
-    it('route opted in via .on("$error") returns an unhandled signal after run throws → UnknownSignalError thrown', async () => {
+    it('route opted in via optin: "$error" returns an unhandled signal after run throws → UnknownSignalError thrown', async () => {
       // arrange — step opts in but route returns a signal with no matching transition
       const runFn = vi.fn().mockRejectedValue(new Error('step failed'))
       const routeFn = vi.fn().mockReturnValue('unknown_signal')
@@ -1062,7 +1067,8 @@ describe('runLoop', () => {
           name: 'flawed',
           run: runFn,
           route: routeFn,
-          transitions: [{ signal: '$error', target: { kind: 'end' } }],  // opt-in only
+          transitions: [],
+          errorAware: true,
           next: undefined,
         }],
       }
@@ -1091,9 +1097,9 @@ describe('runLoop', () => {
         entryStep: 'worker',
         onError: 'handle_error',
         steps: [
-          { name: 'worker', run: throwingRun, route: undefined, transitions: [], next: undefined },
+          { name: 'worker', run: throwingRun, route: undefined, transitions: [], errorAware: false, next: undefined },
           { name: 'handle_error', run: handlerRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1123,6 +1129,7 @@ describe('runLoop', () => {
           run: runFn,
           route: undefined,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -1153,11 +1160,12 @@ describe('runLoop', () => {
         steps: [
           { name: 'work', run: throwingRun, route: routeFn,
             transitions: [{ signal: 'continue', target: { kind: 'step', name: 'next_step' } }],
+            errorAware: false,
             next: undefined },
           { name: 'next_step', run: nextRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
           { name: 'handle_error', run: handleErrorRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1174,8 +1182,8 @@ describe('runLoop', () => {
       expect(result.signal).toBe('done')
     })
 
-    it('step with route WITH .on("$error") opt-in and l.onError(): route takes precedence; l.onError() step NOT reached', async () => {
-      // arrange — route opts in via .on('$error') and handles error by routing to 'next_step'
+    it('step with route WITH optin: "$error" and l.onError(): route takes precedence; l.onError() step NOT reached', async () => {
+      // arrange — route opts in via errorAware: true and handles error by routing to 'next_step'
       const throwingRun = vi.fn().mockRejectedValue(new Error('domain error'))
       const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) =>
         s.$error !== null ? 'continue' : 'continue'
@@ -1190,13 +1198,13 @@ describe('runLoop', () => {
           { name: 'work', run: throwingRun, route: routeFn,
             transitions: [
               { signal: 'continue', target: { kind: 'step', name: 'next_step' } },
-              { signal: '$error', target: { kind: 'end' } },  // opt-in declaration
             ],
+            errorAware: true,
             next: undefined },
           { name: 'next_step', run: nextRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
           { name: 'handle_error', run: handleErrorRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1224,7 +1232,7 @@ describe('runLoop', () => {
         startCalled: true,
         entryStep: 'work',
         onError: undefined,
-        steps: [{ name: 'work', run: runFn, route: undefined, transitions: [], next: undefined }],
+        steps: [{ name: 'work', run: runFn, route: undefined, transitions: [], errorAware: false, next: undefined }],
       }
       const shouldStop = vi.fn().mockReturnValue(false)
       const state: Record<string, unknown> = {}
@@ -1283,6 +1291,7 @@ describe('runLoop', () => {
           run: runFn,
           route: routeFn,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -1300,7 +1309,7 @@ describe('runLoop', () => {
       expect(result.state.count).toBe(10)
     })
 
-    it('run throws then route also throws (route opted in via .on("$error")): $error overwritten with route error; paused: true', async () => {
+    it('run throws then route also throws (route opted in via optin: "$error"): $error overwritten with route error; paused: true', async () => {
       // arrange
       const runError = new Error('run failure')
       const routeError = new Error('route failure')
@@ -1318,7 +1327,8 @@ describe('runLoop', () => {
           name: 'double_fail',
           run: runFn,
           route: routeFn,
-          transitions: [{ signal: '$error', target: { kind: 'end' } }],  // opt-in
+          transitions: [],
+          errorAware: true,
           next: undefined,
         }],
       }
@@ -1355,11 +1365,11 @@ describe('runLoop', () => {
         entryStep: 'fail_step',
         onError: 'handle_error',
         steps: [
-          { name: 'fail_step', run: failRun, route: undefined, transitions: [], next: undefined },
+          { name: 'fail_step', run: failRun, route: undefined, transitions: [], errorAware: false, next: undefined },
           { name: 'handle_error', run: handlerRun, route: () => 'next',
-            transitions: [{ signal: 'next', target: { kind: 'step', name: 'continue_step' } }], next: undefined },
+            transitions: [{ signal: 'next', target: { kind: 'step', name: 'continue_step' } }], errorAware: false, next: undefined },
           { name: 'continue_step', run: continueRun, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1385,12 +1395,11 @@ describe('runLoop', () => {
         entryStep: 'work',
         onError: 'handle_error',
         steps: [
-          { name: 'work', run: workRun, route: undefined, transitions: [], next: undefined },
+          { name: 'work', run: workRun, route: undefined, transitions: [], errorAware: false, next: undefined },
           { name: 'handle_error', run: handlerRun, route: handleRoute,
             transitions: [
               { signal: 'bail', target: { kind: 'end' } },
-              { signal: '$error', target: { kind: 'end' } },  // opt-in: route called when this step's run throws
-            ], next: undefined },
+            ], errorAware: true, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1424,6 +1433,7 @@ describe('runLoop', () => {
           run: runFn,
           route: undefined,
           transitions: [],
+          errorAware: false,
           next: undefined,
         }],
       }
@@ -1460,11 +1470,11 @@ describe('runLoop', () => {
         entryStep: 'A',
         onError: 'B',
         steps: [
-          { name: 'A', run: runA, route: undefined, transitions: [], next: undefined },
+          { name: 'A', run: runA, route: undefined, transitions: [], errorAware: false, next: undefined },
           { name: 'B', run: runB, route: routeB,
-            transitions: [{ signal: 'next', target: { kind: 'step', name: 'C' } }], next: undefined },
+            transitions: [{ signal: 'next', target: { kind: 'step', name: 'C' } }], errorAware: false, next: undefined },
           { name: 'C', run: runC, route: () => 'done',
-            transitions: [{ signal: 'done', target: { kind: 'end' } }], next: undefined },
+            transitions: [{ signal: 'done', target: { kind: 'end' } }], errorAware: false, next: undefined },
         ],
       }
       const state: Record<string, unknown> = {}
@@ -1483,7 +1493,7 @@ describe('runLoop', () => {
       expect(result.cursor).toBeNull()
     })
 
-    it('run throws; route opted in via .on("$error") exits with a custom signal; $error remains in LoopResult.state', async () => {
+    it('run throws; route opted in via optin: "$error" exits with a custom signal; $error remains in LoopResult.state', async () => {
       // arrange
       const thrownError = new Error('domain throw treated as complete')
       const runFn = vi.fn().mockRejectedValue(thrownError)
@@ -1492,10 +1502,9 @@ describe('runLoop', () => {
       })
       const graph = build(l =>
         l.start()
-         .step('A', { run: runFn, route: routeFn })
+         .step('A', { optin: '$error', run: runFn, route: routeFn })
          .on('complete').end()
          .on('normal').end()
-         .on('$error').end()  // opt-in: route is called on error path
       )
       const state: Record<string, unknown> = {}
       const ctx = { sessionId: 'test-session' }

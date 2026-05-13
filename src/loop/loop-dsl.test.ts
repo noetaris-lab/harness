@@ -4,6 +4,7 @@ import type {
   LoopBuilder,
   RunFn,
   RouteFn,
+  ErrorAwareRouteFn,
   StepOptions,
   FrameworkState,
 } from './loop-dsl.js'
@@ -352,7 +353,7 @@ describe('LoopDSL', () => {
       expectTypeOf(fn).returns.toEqualTypeOf<Promise<Partial<{ messages: string[] }>> | Partial<{ messages: string[] }>>()
     })
 
-    it('RouteFn state parameter includes user field and framework fields; no ctx; return is string', () => {
+    it('RouteFn state parameter includes user field and $interrupt; excludes $error; return is string', () => {
       // arrange
       type State = { count: number }
 
@@ -360,20 +361,44 @@ describe('LoopDSL', () => {
       const fn: RouteFn<State> = (state) => (state.count > 0 ? 'pos' : 'zero')
 
       expectTypeOf(fn).parameter(0).toHaveProperty('count').toEqualTypeOf<number>()
-      expectTypeOf(fn).parameter(0).toHaveProperty('$error').toEqualTypeOf<Error | null>()
-      expectTypeOf(fn).parameters.toEqualTypeOf<[State & FrameworkState]>() // exactly one param, no ctx
+      expectTypeOf(fn).parameter(0).not.toHaveProperty('$error')
+      expectTypeOf(fn).parameters.toEqualTypeOf<[State & Omit<FrameworkState, '$error'>]>() // exactly one param, no ctx
       expectTypeOf(fn).returns.toEqualTypeOf<string>()
     })
 
-    it('StepOptions allows both run and route to be absent at the type level', () => {
+    it('ErrorAwareRouteFn state parameter includes $error and $interrupt; return is string', () => {
+      // arrange
+      type State = { count: number }
+
+      // act & assert
+      const fn: ErrorAwareRouteFn<State> = (state) => (state.$error ? 'error' : 'ok')
+
+      expectTypeOf(fn).parameter(0).toHaveProperty('count').toEqualTypeOf<number>()
+      expectTypeOf(fn).parameter(0).toHaveProperty('$error').toEqualTypeOf<Error | null>()
+      expectTypeOf(fn).parameter(0).toHaveProperty('$interrupt').toEqualTypeOf<FrameworkState['$interrupt']>()
+      expectTypeOf(fn).parameters.toEqualTypeOf<[State & FrameworkState]>()
+      expectTypeOf(fn).returns.toEqualTypeOf<string>()
+    })
+
+    it('StepOptions (non-optin) allows run and route to be absent at the type level', () => {
+      // arrange
+      type State = { x: number }
+
+      // act & assert — use the non-optin branch of the discriminated union
+      const opts: Extract<StepOptions<State, object>, { optin?: undefined }> = {}
+
+      expectTypeOf(opts).toHaveProperty('run').toEqualTypeOf<RunFn<State, object> | undefined>()
+      expectTypeOf(opts).toHaveProperty('route').toEqualTypeOf<RouteFn<State> | undefined>()
+    })
+
+    it('StepOptions (optin: "$error") route is ErrorAwareRouteFn', () => {
       // arrange
       type State = { x: number }
 
       // act & assert
-      const opts: StepOptions<State, object> = {}
+      const opts: Extract<StepOptions<State, object>, { optin: '$error' }> = { optin: '$error' }
 
-      expectTypeOf(opts).toHaveProperty('run').toEqualTypeOf<RunFn<State, object> | undefined>()
-      expectTypeOf(opts).toHaveProperty('route').toEqualTypeOf<RouteFn<State> | undefined>()
+      expectTypeOf(opts).toHaveProperty('route').toEqualTypeOf<ErrorAwareRouteFn<State> | undefined>()
     })
   })
 })

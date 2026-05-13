@@ -140,16 +140,18 @@ export async function runLoop(
       state.$error = null
     }
 
-    // route is called when: route exists AND (run succeeded, step has no run, OR step opts in
-    // to error routing by declaring an .on("$error") transition)
+    // route is called when: route exists AND (run succeeded, step has no run, OR step opted in
+    // to error routing via optin: '$error' in the step config)
     const callRoute =
       step.route !== undefined &&
-      (runSucceeded || step.run === undefined || step.transitions.some(t => t.signal === '$error'))
+      (runSucceeded || step.run === undefined || step.errorAware)
 
     if (callRoute) {
+      // callRoute implies step.route !== undefined; non-null assertion is sound here
+      const routeFn = step.route!
       let signal: string
       try {
-        signal = step.route(state as unknown as Parameters<typeof step.route>[0])
+        signal = routeFn(state as unknown as Parameters<typeof routeFn>[0])
       } catch (e) {
         // route itself threw — treat as terminal error; state update from run already stands
         state.$error = e instanceof Error ? e : new Error(String(e))
