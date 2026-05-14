@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { resolveSessionStore, querySessionPhase, runWithSession } from './session-lifecycle.js'
-import type { SessionStore } from './session-store.js'
-import { required } from '../harness/ctx-markers.js'
+import type { SessionStore, StoredRun } from './session-store.js'
+import { runWithSession, resolveSessionStore, querySessionPhase } from './session-lifecycle.js'
+import { InterruptPause } from './ctx-interrupt.js'
+import { UnknownSignalError } from '../loop/loop-executor.js'
 import { createLoopBuilder, extractLoopDefinition } from '../loop/loop-dsl.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
-import { UnknownSignalError } from '../loop/loop-executor.js'
-import { createAgent } from './create-agent.js'
+import * as loopExecutorModule from '../loop/loop-executor.js'
 import { createHarness } from '../harness/harness-builder.js'
-import { field } from '../harness/state-field.js'
+import { createAgent } from './create-agent.js'
 
 // -----------------------------------------------------------------------
 // Stub factory
@@ -32,21 +32,7 @@ function makeCompletingGraph(): LoopDefinition {
   return extractLoopDefinition(b)
 }
 
-// A graph whose only step runs a side-effect callback then completes with 'done'
-function makeGraphWithSideEffect(
-  sideEffect: (state: Record<string, unknown>) => void,
-): LoopDefinition {
-  const b = createLoopBuilder<Record<string, unknown>, Record<string, unknown>>()
-  b.start()
-    .step('go', {
-      run: async (state) => { sideEffect(state); return {} },
-      route: () => 'done',
-    })
-    .on('done').end()
-  return extractLoopDefinition(b)
-}
-
-// A graph whose step mutates field 'x' from any value to 'after', then completes
+// A graph whose step changes field 'x' from any value to 'after', then completes with 'done'
 function makeGraphWithStateChange(): LoopDefinition {
   const b = createLoopBuilder<Record<string, unknown>, Record<string, unknown>>()
   b.start()
@@ -64,8 +50,33 @@ function makeBrokenGraph(): LoopDefinition {
   const b = createLoopBuilder<Record<string, unknown>, Record<string, unknown>>()
   b.start()
     .step('go', { route: () => 'undeclared-at-runtime' })
-    .on('some-other-signal').end()
+    .on('declared').end()
   return extractLoopDefinition(b)
+}
+
+// A graph that triggers ctx.interrupt() on step 'stepB', causing runLoop to return
+// paused with signal '$interrupt' and cursor 'stepB'.
+function makeInterruptingGraph(): LoopDefinition {
+  const b = createLoopBuilder<Record<string, unknown>, Record<string, unknown>>()
+  b.start()
+    .step('stepB', {
+      run: async (_state, ctx) => { await (ctx as unknown as { interrupt: (p: unknown) => Promise<unknown> }).interrupt('what color?'); return {} },
+      route: () => 'done',
+    })
+    .on('done').end()
+  return extractLoopDefinition(b)
+}
+
+// Sets up a vi.spyOn on the runLoop export so that the next call returns
+// { signal: null, paused: false, state: {}, cursor: null }.
+// Used to exercise the defensive null-signal branch in runWithSession.
+function spyRunLoopNoSignal(): void {
+  vi.spyOn(loopExecutorModule, 'runLoop').mockResolvedValueOnce({
+    signal: null,
+    paused: false,
+    state: {},
+    cursor: null,
+  })
 }
 
 // -----------------------------------------------------------------------
@@ -74,92 +85,337 @@ function makeBrokenGraph(): LoopDefinition {
 
 describe('session-lifecycle', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     vi.clearAllMocks()
   })
 
   // -----------------------------------------------------------------------
-  // Group 1: resolveSessionStore — duck-typing and entry selection
+  // Group 1: runWithSession — no store (stateless path)
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — no store', () => {
+    it('returns completed LoopResult using initialStateArg when store is undefined', async () => {
+      // arrange
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-nostore' }
+
+      // act
+      const result = await runWithSession(undefined, 'sid-nostore', graph, { x: 'hello' }, undefined, ctx)
+
+      // assert
+      expect(result.paused).toBe(false)
+      expect(result.signal).toBe('done')
+      expect(result.state).toMatchObject({ x: 'hello' })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 2: runWithSession — load failure
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — load failure', () => {
+    it('calls onStoreError with error and "load" and returns synthetic result with signal "$error"', async () => {
+      // arrange
+      const loadError = new Error('db timeout')
+      const store = makeStubStore({ load: vi.fn().mockRejectedValue(loadError) })
+      const onStoreError = vi.fn()
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-load-fail' }
+
+      // act
+      const result = await runWithSession(store, 'sid-load-fail', graph, {}, undefined, ctx, { onStoreError })
+
+      // assert
+      expect(result.paused).toBe(false)
+      expect(result.signal).toBe('$error')
+      expect(onStoreError).toHaveBeenCalledOnce()
+      expect(onStoreError).toHaveBeenCalledWith(expect.objectContaining({ cause: loadError }), 'load')
+      expect(store.save).not.toHaveBeenCalled()
+    })
+
+    it('returns synthetic LoopResult with signal "$error" and does not throw when onStoreError is not provided', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockRejectedValue(new Error('disk fail')) })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-load-fail-silent' }
+
+      // act
+      const result = await runWithSession(store, 'sid-load-fail-silent', graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.paused).toBe(false)
+      expect(result.signal).toBe('$error')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 3: runWithSession — StoredRun fields on fresh session
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — StoredRun fields on fresh session', () => {
+    it('saves StoredRun with phase "completed", initialState, and non-empty settledAt', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-fresh-fields' }
+
+      // act
+      await runWithSession(store, 'sid-fresh-fields', graph, { count: 3 }, undefined, ctx)
+
+      // assert
+      expect(store.save).toHaveBeenCalledOnce()
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.phase).toBe('completed')
+      expect(saved.initialState).toEqual({ count: 3 })
+      expect(saved.settledAt).toBeTruthy()
+      expect(saved.settledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it('saved StoredRun has non-empty runId UUID string and non-empty ISO startedAt', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-runid' }
+
+      // act
+      await runWithSession(store, 'sid-runid', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(typeof saved.runId).toBe('string')
+      expect(saved.runId.length).toBeGreaterThan(0)
+      expect(saved.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      expect(saved.startedAt).toBeTruthy()
+      expect(saved.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 4: runWithSession — resumption path
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — resumption', () => {
+    it('saved initialState equals loaded finalState, not initialStateArg, on resumption', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          runId: 'old-run-id',
+          sessionId: 'sid-resume',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'paused',
+          initialState: { x: 0 },
+          finalState: { x: 5 },
+          step: 'go', // 'go' matches the entry step of makeCompletingGraph()
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-resume' }
+
+      // act
+      await runWithSession(store, 'sid-resume', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.initialState).toEqual({ x: 5 })
+    })
+
+    it('saved runId is a freshly generated UUID, not the loaded record runId', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          runId: 'known-old-run-id',
+          sessionId: 'sid-resume-id',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'paused',
+          initialState: {},
+          finalState: { x: 5 },
+          step: 'go', // 'go' matches the entry step of makeCompletingGraph()
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-resume-id' }
+
+      // act
+      await runWithSession(store, 'sid-resume-id', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.runId).not.toBe('known-old-run-id')
+      expect(saved.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 5: runWithSession — initialState snapshot isolation
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — initialState snapshot isolation', () => {
+    it('initialState is the pre-loop snapshot; finalState is the post-loop state', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeGraphWithStateChange()
+      const ctx = { sessionId: 'sid-snapshot' }
+
+      // act
+      await runWithSession(store, 'sid-snapshot', graph, { x: 'before' }, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.initialState).toEqual({ x: 'before' })
+      expect(saved.finalState).toMatchObject({ x: 'after' })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 6: runWithSession — paused terminal save shape
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — paused terminal save shape', () => {
+    it('saved record has phase "paused", step from loop cursor, and signal when loop pauses with a signal', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeInterruptingGraph()
+      const ctx = {
+        sessionId: 'sid-paused-sig',
+        interrupt: (prompt: unknown, id?: string) => { throw new InterruptPause(id ?? 'auto-id', prompt) },
+      }
+
+      // act
+      await runWithSession(store, 'sid-paused-sig', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.phase).toBe('paused')
+      expect(saved.step).toBe('stepB')
+      expect(saved.signal).toBe('$interrupt')
+      expect('finalState' in saved).toBe(true)
+    })
+
+    it('saved record has phase "paused" and no signal field when loop pauses via shouldStop', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const shouldStop = () => true
+      const ctx = { sessionId: 'sid-paused-nosig' }
+
+      // act
+      await runWithSession(store, 'sid-paused-nosig', graph, {}, undefined, ctx, { shouldStop })
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.phase).toBe('paused')
+      expect(saved.step).toBe('go')
+      expect('signal' in saved).toBe(false)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 7: runWithSession — completed terminal save shape
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — completed terminal save shape', () => {
+    it('saved record has phase "completed", signal, and no step when loop exits with a signal', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-completed-sig' }
+
+      // act
+      await runWithSession(store, 'sid-completed-sig', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.phase).toBe('completed')
+      expect(saved.signal).toBe('done')
+      expect('step' in saved).toBe(false)
+    })
+
+    it('saved record has phase "completed" and no signal field when loop exits with null signal', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-completed-nosig' }
+      spyRunLoopNoSignal()
+
+      // act
+      await runWithSession(store, 'sid-completed-nosig', graph, {}, undefined, ctx)
+
+      // assert
+      const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.phase).toBe('completed')
+      expect('signal' in saved).toBe(false)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 8: runWithSession — terminal save error handling
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — terminal save error handling', () => {
+    it('swallows terminal-save error, calls onStoreError with error and "persist", returns LoopResult', async () => {
+      // arrange
+      const terminalError = new Error('disk full')
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue(null),
+        save: vi.fn().mockRejectedValue(terminalError),
+      })
+      const onStoreError = vi.fn()
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-persist-fail' }
+
+      // act
+      const result = await runWithSession(store, 'sid-persist-fail', graph, {}, undefined, ctx, { onStoreError })
+
+      // assert
+      expect(result.paused).toBe(false)
+      expect(result.signal).toBe('done')
+      expect(onStoreError).toHaveBeenCalledOnce()
+      expect(onStoreError).toHaveBeenCalledWith(terminalError, 'persist')
+    })
+
+    it('swallows terminal-save error and returns LoopResult even when onStoreError is not provided', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue(null),
+        save: vi.fn().mockRejectedValue(new Error('write error')),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { sessionId: 'sid-persist-fail-silent' }
+
+      // act
+      const result = await runWithSession(store, 'sid-persist-fail-silent', graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.paused).toBe(false)
+      expect(result.signal).toBe('done')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 9: runWithSession — runLoop error propagation
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — runLoop error propagation', () => {
+    it('propagates error from runLoop and makes no terminal save call', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeBrokenGraph()
+      const ctx = { sessionId: 'sid-loop-throw' }
+
+      // act & assert
+      await expect(runWithSession(store, 'sid-loop-throw', graph, {}, undefined, ctx)).rejects.toThrow(UnknownSignalError)
+      expect(store.save).not.toHaveBeenCalled()
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 10: resolveSessionStore — duck-typing
   // -----------------------------------------------------------------------
 
   describe('resolveSessionStore', () => {
-    it('returns undefined when storeEntries is empty', () => {
-      // arrange
-      const storeEntries: never[] = []
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when all entries have kind === "provide"', () => {
-      // arrange
-      const storeEntries = [{ kind: 'provide' as const, key: 'model', value: {} }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when store entry value has no session key', () => {
-      // arrange
-      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { cache: {} } }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when session value is null', () => {
-      // arrange
-      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: null } }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when session value has save but lacks load', () => {
-      // arrange
-      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: { save: vi.fn() } } }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when session value has load but lacks save', () => {
-      // arrange
-      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: { load: vi.fn() } } }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns undefined when session value is a required() marker', () => {
-      // arrange
-      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: required() } }]
-
-      // act
-      const result = resolveSessionStore(storeEntries)
-
-      // assert
-      expect(result).toBeUndefined()
-    })
-
-    it('returns the session store when a single valid store entry has load and save', () => {
+    it('returns the matching store object when an entry value has session with both load and save functions', () => {
       // arrange
       const mockStore = { load: vi.fn(), save: vi.fn() }
       const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: mockStore } }]
@@ -171,403 +427,70 @@ describe('session-lifecycle', () => {
       expect(result).toBe(mockStore)
     })
 
-    it('returns the last valid session store when multiple entries have valid session stores', () => {
+    it('returns undefined when no entry value has session with both load and save functions', () => {
       // arrange
-      const firstStore = { load: vi.fn(), save: vi.fn() }
-      const lastStore = { load: vi.fn(), save: vi.fn() }
-      const storeEntries = [
-        { kind: 'store' as const, key: '__store__', value: { session: firstStore } },
-        { kind: 'store' as const, key: '__store__', value: { session: lastStore } },
-      ]
+      const storeEntries = [{ kind: 'store' as const, key: '__store__', value: { session: { load: vi.fn() } } }]
 
       // act
       const result = resolveSessionStore(storeEntries)
 
       // assert
-      expect(result).toBe(lastStore)
-      expect(result).not.toBe(firstStore)
+      expect(result).toBeUndefined()
     })
   })
 
   // -----------------------------------------------------------------------
-  // Group 2: querySessionPhase — store-absent and store-present paths
+  // Group 13: querySessionPhase — phase resolution
   // -----------------------------------------------------------------------
 
   describe('querySessionPhase', () => {
     it('returns { phase: "fresh" } without any store call when store is undefined', async () => {
-      // arrange
-      // no setup needed
+      // arrange — none
 
       // act
-      const result = await querySessionPhase(undefined, 'sid-abc')
+      const result = await querySessionPhase(undefined, 'sid-nostore-status')
 
       // assert
       expect(result).toEqual({ phase: 'fresh' })
     })
 
-    it('calls store.load with the provided sessionId', async () => {
+    it('returns { phase: "fresh" } when store is present and store.load returns null', async () => {
       // arrange
       const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
 
       // act
-      await querySessionPhase(store, 'sid-xyz')
+      const result = await querySessionPhase(store, 'sid-null-load')
 
       // assert
-      expect(store.load).toHaveBeenCalledOnce()
-      expect(store.load).toHaveBeenCalledWith('sid-xyz')
+      expect(result).toEqual({ phase: 'fresh' })
+      expect(store.load).toHaveBeenCalledWith('sid-null-load')
     })
 
-    it('returns the SessionPhase mapped from the loaded stored session', async () => {
+    it('returns { phase: "paused", step } when store returns a paused StoredRun', async () => {
       // arrange
       const store = makeStubStore({
         load: vi.fn().mockResolvedValue({
-          phase: 'paused', state: { x: 1 }, step: 'resume-step', signal: '$error',
+          runId: 'r1',
+          sessionId: 'sid-paused-q',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'paused',
+          initialState: {},
+          finalState: {},
+          step: 'stepX',
         }),
       })
 
       // act
-      const result = await querySessionPhase(store, 'sid-123')
+      const result = await querySessionPhase(store, 'sid-paused-q')
 
       // assert
-      expect(result).toEqual({ phase: 'paused', step: 'resume-step', signal: '$error' })
-    })
-
-    it('propagates the error when store.load throws', async () => {
-      // arrange
-      const loadError = new Error('store unavailable')
-      const store = makeStubStore({ load: vi.fn().mockRejectedValue(loadError) })
-
-      // act & assert
-      await expect(querySessionPhase(store, 'sid-fail')).rejects.toThrow('store unavailable')
+      expect(result).toEqual({ phase: 'paused', step: 'stepX' })
     })
   })
 
   // -----------------------------------------------------------------------
-  // Group 3: runWithSession — no store (stateless path)
-  // -----------------------------------------------------------------------
-
-  describe('runWithSession — no store', () => {
-    it('returns completed LoopResult from runLoop when store is undefined', async () => {
-      // arrange
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-1' }
-
-      // act
-      const result = await runWithSession(undefined, 'sid-1', graph, { x: 'initial' }, undefined, ctx)
-
-      // assert
-      expect(result.paused).toBe(false)
-      expect(result.signal).toBe('done')
-      expect(result.state).toMatchObject({ x: 'initial' })
-    })
-
-    it('pauses immediately and returns LoopResult without store I/O when shouldStop returns true and store is undefined', async () => {
-      // arrange
-      const graph = makeCompletingGraph()
-      const shouldStop = vi.fn().mockReturnValue(true)
-      const ctx = { sessionId: 'sid-2' }
-
-      // act
-      const result = await runWithSession(undefined, 'sid-2', graph, {}, undefined, ctx, { shouldStop })
-
-      // assert
-      expect(result.paused).toBe(true)
-      expect(result.cursor).toBe('go')
-      expect(shouldStop).toHaveBeenCalled()
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // Group 4: runWithSession — fresh session with store
-  // -----------------------------------------------------------------------
-
-  describe('runWithSession — fresh session with store', () => {
-    it('calls store.load and then runLoop in the correct order', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-10' }
-
-      // act
-      const result = await runWithSession(store, 'sid-10', graph, {}, undefined, ctx)
-
-      // assert
-      expect(store.load).toHaveBeenCalledWith('sid-10')
-      expect(result.paused).toBe(false)
-      expect(store.save).toHaveBeenCalledTimes(2)
-    })
-
-    it('in-flight save uses sessionId and phase "in-flight" with a snapshot of the pre-run state', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeGraphWithStateChange()
-      const ctx = { sessionId: 'sid-12' }
-
-      // act
-      await runWithSession(store, 'sid-12', graph, { x: 'before' }, undefined, ctx)
-
-      // assert
-      const inFlightSave = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]!
-      expect(inFlightSave[1].phase).toBe('in-flight')
-      expect(inFlightSave[1].state).toEqual({ x: 'before' })
-      const terminalSave = (store.save as ReturnType<typeof vi.fn>).mock.calls[1]!
-      expect(terminalSave[1].state).toMatchObject({ x: 'after' })
-    })
-
-    it('in-flight save occurs before runLoop executes (ordering guarantee)', async () => {
-      // arrange
-      const callOrder: string[] = []
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue(null),
-        save: vi.fn().mockImplementation(() => { callOrder.push('save'); return Promise.resolve() }),
-      })
-      const graph = makeGraphWithSideEffect(() => callOrder.push('runLoop-step'))
-      const ctx = { sessionId: 'sid-order' }
-
-      // act
-      await runWithSession(store, 'sid-order', graph, {}, undefined, ctx)
-
-      // assert
-      expect(callOrder[0]).toBe('save')
-      expect(callOrder[1]).toBe('runLoop-step')
-      expect(callOrder[2]).toBe('save')
-    })
-
-    it('saves paused terminal phase with step cursor and no signal field when shouldStop triggers', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeCompletingGraph()
-      const shouldStop = () => true
-      const ctx = { sessionId: 'sid-paused' }
-
-      // act
-      await runWithSession(store, 'sid-paused', graph, {}, undefined, ctx, { shouldStop })
-
-      // assert
-      const terminalSave = (store.save as ReturnType<typeof vi.fn>).mock.calls[1]!
-      expect(terminalSave[1]).toEqual({
-        phase: 'paused',
-        state: expect.any(Object),
-        step: 'go',
-      })
-    })
-
-    it('saves completed terminal phase with signal when loop ends normally', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-done' }
-
-      // act
-      await runWithSession(store, 'sid-done', graph, {}, undefined, ctx)
-
-      // assert
-      const terminalSave = (store.save as ReturnType<typeof vi.fn>).mock.calls[1]!
-      expect(terminalSave[1]).toEqual({
-        phase: 'completed',
-        state: expect.any(Object),
-        signal: 'done',
-      })
-    })
-
-    it('returns the LoopResult from runLoop after terminal save', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-ret' }
-
-      // act
-      const result = await runWithSession(store, 'sid-ret', graph, { count: 7 }, undefined, ctx)
-
-      // assert
-      expect(result).toMatchObject({ paused: false, signal: 'done' })
-      expect(result.state).toMatchObject({ count: 7 })
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // Group 5: runWithSession — resumption path
-  // -----------------------------------------------------------------------
-
-  describe('runWithSession — resumption', () => {
-    it('preserves stored fields not overridden by initialStateArg on resumption', async () => {
-      // arrange
-      const storedState = { x: 'stored-x', y: 'stored-y' }
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue({ phase: 'paused', state: storedState, step: 'go' }),
-      })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-resume' }
-
-      // act
-      const result = await runWithSession(store, 'sid-resume', graph, { x: 'initial-x' }, undefined, ctx)
-
-      // assert
-      expect(result.state).toMatchObject({ x: 'initial-x', y: 'stored-y' })
-    })
-
-    it('applies schema reduce function on resumption to merge initialStateArg with stored value', async () => {
-      // arrange
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue({ phase: 'paused', state: { msgs: ['stored'] }, step: 'go' }),
-      })
-      const schema = { msgs: field<string[]>({ reduce: (curr, next) => [...curr, ...next] }) }
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-reduce' }
-
-      // act
-      const result = await runWithSession(store, 'sid-reduce', graph, { msgs: ['new'] }, schema, ctx)
-
-      // assert
-      expect(result.state.msgs).toEqual(['stored', 'new'])
-    })
-
-    it('in-flight snapshot reflects the merged resumption state (not raw stored state)', async () => {
-      // arrange
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue({ phase: 'paused', state: { x: 'stored' }, step: 'go' }),
-      })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-snapshot-resume' }
-
-      // act
-      await runWithSession(store, 'sid-snapshot-resume', graph, { x: 'override' }, undefined, ctx)
-
-      // assert
-      const inFlightSave = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]!
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // Group 6: runWithSession — error handling
-  // -----------------------------------------------------------------------
-
-  describe('runWithSession — error handling', () => {
-    it('resolves with signal "$error" and fires onStoreError when store.load rejects, and makes no in-flight save', async () => {
-      // arrange
-      const loadError = new Error('load failed')
-      const store = makeStubStore({ load: vi.fn().mockRejectedValue(loadError) })
-      const onStoreError = vi.fn()
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-load-fail' }
-
-      // act
-      const result = await runWithSession(store, 'sid-load-fail', graph, {}, undefined, ctx, { onStoreError })
-
-      // assert
-      expect(result.signal).toBe('$error')
-      expect(result.paused).toBe(false)
-      expect(onStoreError).toHaveBeenCalledOnce()
-      expect(onStoreError).toHaveBeenCalledWith(expect.objectContaining({ cause: loadError }), 'load')
-      expect(store.save).not.toHaveBeenCalled()
-    })
-
-    it('resolves with signal "$error" and does not call runLoop when store.load rejects', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockRejectedValue(new Error('disk error')) })
-      let loopCalled = false
-      const graph = makeGraphWithSideEffect(() => { loopCalled = true })
-      const ctx = { sessionId: 'sid-no-loop' }
-
-      // act
-      const result = await runWithSession(store, 'sid-no-loop', graph, {}, undefined, ctx)
-
-      // assert
-      expect(result.signal).toBe('$error')
-      expect(loopCalled).toBe(false)
-    })
-
-    it('throws when in-flight store.save rejects', async () => {
-      // arrange
-      const inflightError = new Error('save failed')
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue(null),
-        save: vi.fn().mockRejectedValue(inflightError),
-      })
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-inflight-fail' }
-
-      // act & assert
-      await expect(runWithSession(store, 'sid-inflight-fail', graph, {}, undefined, ctx)).rejects.toThrow('save failed')
-    })
-
-    it('runLoop is not called when in-flight store.save throws', async () => {
-      // arrange
-      let loopCalled = false
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue(null),
-        save: vi.fn().mockRejectedValue(new Error('save error')),
-      })
-      const graph = makeGraphWithSideEffect(() => { loopCalled = true })
-      const ctx = { sessionId: 'sid-no-run' }
-
-      // act & assert
-      await expect(runWithSession(store, 'sid-no-run', graph, {}, undefined, ctx)).rejects.toThrow()
-      expect(loopCalled).toBe(false)
-    })
-
-    it('swallows terminal-save failure (completed), calls onStoreError with error and "persist", and still returns LoopResult', async () => {
-      // arrange
-      const terminalError = new Error('terminal save failed')
-      let saveCount = 0
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue(null),
-        save: vi.fn().mockImplementation(() => {
-          saveCount++
-          return saveCount === 1 ? Promise.resolve() : Promise.reject(terminalError)
-        }),
-      })
-      const onStoreError = vi.fn()
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-term-fail' }
-
-      // act
-      const result = await runWithSession(store, 'sid-term-fail', graph, {}, undefined, ctx, { onStoreError })
-
-      // assert
-      expect(result.paused).toBe(false)
-      expect(result.signal).toBe('done')
-      expect(onStoreError).toHaveBeenCalledOnce()
-      expect(onStoreError).toHaveBeenCalledWith(terminalError, 'persist')
-    })
-
-    it('swallows terminal-save failure (paused), calls onStoreError with "persist", and still returns LoopResult', async () => {
-      // arrange
-      const terminalError = new Error('paused save failed')
-      let saveCount = 0
-      const store = makeStubStore({
-        load: vi.fn().mockResolvedValue(null),
-        save: vi.fn().mockImplementation(() => {
-          saveCount++
-          return saveCount === 1 ? Promise.resolve() : Promise.reject(terminalError)
-        }),
-      })
-      const onStoreError = vi.fn()
-      const shouldStop = () => true
-      const graph = makeCompletingGraph()
-      const ctx = { sessionId: 'sid-paused-fail' }
-
-      // act
-      const result = await runWithSession(store, 'sid-paused-fail', graph, {}, undefined, ctx, { shouldStop, onStoreError })
-
-      // assert
-      expect(result.paused).toBe(true)
-      expect(onStoreError).toHaveBeenCalledWith(terminalError, 'persist')
-    })
-
-    it('propagates errors thrown by runLoop without catching them', async () => {
-      // arrange
-      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
-      const graph = makeBrokenGraph()
-      const ctx = { sessionId: 'sid-loop-error' }
-
-      // act & assert
-      await expect(runWithSession(store, 'sid-loop-error', graph, {}, undefined, ctx)).rejects.toThrow(UnknownSignalError)
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // Group 7: create-agent.ts wiring — agent.status() via resolved store
+  // Group 14: create-agent.ts wiring (integration)
   // -----------------------------------------------------------------------
 
   describe('create-agent.ts wiring', () => {
@@ -604,7 +527,16 @@ describe('session-lifecycle', () => {
     it('agent.status() returns the mapped SessionPhase for a stored session', async () => {
       // arrange
       const mockStore = makeStubStore({
-        load: vi.fn().mockResolvedValue({ phase: 'completed', state: {}, signal: 'all-done' }),
+        load: vi.fn().mockResolvedValue({
+          runId: 'r1',
+          sessionId: 'session-xyz',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+          signal: 'all-done',
+        }),
       })
       const h = createHarness()({})
         .store({ session: mockStore })

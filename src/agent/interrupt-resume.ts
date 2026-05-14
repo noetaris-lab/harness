@@ -1,4 +1,4 @@
-import type { SessionStore, StoredSession } from './session-store.js'
+import type { SessionStore, StoredRun } from './session-store.js'
 
 // -----------------------------------------------------------------------
 // NoInterruptError
@@ -29,20 +29,25 @@ export async function injectInterruptResponse(
   if (loaded === null) throw new NoInterruptError()
   if (loaded.phase !== 'paused') throw new NoInterruptError()
 
-  const interrupt = loaded.state.$interrupt as { interruptId: string } | null // as: $interrupt is a framework-reserved field with known shape
+  const interrupt = loaded.finalState.$interrupt as { interruptId: string } | null // as: $interrupt is a framework-reserved field with known shape
   if (interrupt === null) throw new NoInterruptError()
   if (interrupt.interruptId !== interruptId) throw new NoInterruptError()
 
-  const existingResponses = (loaded.state.$interruptResponses as Record<string, unknown>) ?? {}
+  const existingResponses = (loaded.finalState.$interruptResponses as Record<string, unknown>) ?? {}
   const newState: Record<string, unknown> = {
-    ...loaded.state,
+    ...loaded.finalState,
     $interrupt: null,
     $interruptResponses: { ...existingResponses, [interruptId]: response },
   }
 
-  const updated: StoredSession = {
+  const updated: StoredRun = {
+    runId: loaded.runId,
+    sessionId: loaded.sessionId,
+    startedAt: loaded.startedAt,
+    settledAt: loaded.settledAt,
     phase: 'paused',
-    state: newState,
+    initialState: loaded.initialState,
+    finalState: newState,
     ...(loaded.step !== undefined ? { step: loaded.step } : {}),
     ...(loaded.signal !== undefined ? { signal: loaded.signal } : {}),
   }

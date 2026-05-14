@@ -377,10 +377,9 @@ describe('EventCallbacks', () => {
       // arrange
       const onStoreError = vi.fn()
       const saveError = new Error('store write failed')
-      // first save (in-flight) succeeds; second save (terminal) fails — tests the persist-phase path
+      // terminal save fails — tests the persist-phase path (in-flight save removed in F_RH)
       const saveFn = vi.fn()
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(saveError)
+        .mockRejectedValue(saveError)
       const stubStore: SessionStore = makeStubStore({ load: vi.fn().mockResolvedValue(null), save: saveFn })
       const runFn = vi.fn().mockResolvedValue({ result: 'computed' })
       const h = createHarness<Ctx>()({}).store({ session: stubStore }).loop(l => l.start().step('compute', { run: runFn, route: () => 'done' }).on('done').end())
@@ -497,7 +496,16 @@ describe('EventCallbacks', () => {
       let capturedCtxEvents: unknown = 'not-set'
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtxEvents = ctx['events']; return {} })
       const stubStore: SessionStore = makeStubStore({
-        load: vi.fn().mockResolvedValue({ phase: 'paused' as const, state: { $interrupt: { interruptId: 'i1', prompt: 'q' }, $interruptResponses: {} }, step: 'work' }),
+        load: vi.fn().mockResolvedValue({
+          runId: 'r1',
+          sessionId: 'session-123',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'paused' as const,
+          initialState: {},
+          finalState: { $interrupt: { interruptId: 'i1', prompt: 'q' }, $interruptResponses: {} },
+          step: 'work',
+        }),
         save: vi.fn().mockResolvedValue(undefined),
       })
       const h = createHarness<Ctx>()({}).store({ session: stubStore }).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())

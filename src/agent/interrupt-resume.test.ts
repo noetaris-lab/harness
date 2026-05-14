@@ -4,7 +4,7 @@ import { createRunHandle, type RunOutcome } from './run-handle.js'
 import { createAgent } from './create-agent.js'
 import { createHarness } from '../harness/harness-builder.js'
 import { runtime } from '../harness/ctx-markers.js'
-import type { SessionStore } from './session-store.js'
+import type { SessionStore, StoredRun } from './session-store.js'
 import * as publicApi from '../index.js'
 
 // -----------------------------------------------------------------------
@@ -16,6 +16,22 @@ function makeStubStore(): SessionStore & { load: ReturnType<typeof vi.fn>; save:
     load: vi.fn(),
     save: vi.fn(),
   } as unknown as SessionStore & { load: ReturnType<typeof vi.fn>; save: ReturnType<typeof vi.fn> }
+}
+
+// -----------------------------------------------------------------------
+// StoredRun fixture factory
+// -----------------------------------------------------------------------
+
+function makeStoredRun(overrides: Partial<StoredRun> & Pick<StoredRun, 'phase'>): StoredRun {
+  return {
+    runId: 'default-run-id',
+    sessionId: 'default-session-id',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    settledAt: '2026-01-01T00:01:00.000Z',
+    initialState: {},
+    finalState: {},
+    ...overrides,
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -60,10 +76,15 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: {
+        initialState: {},
+        finalState: {
           $interrupt: { interruptId: 'q1', prompt: 'Name?' },
           $interruptResponses: {},
           count: 5,
@@ -79,26 +100,31 @@ describe('injectInterruptResponse', () => {
       expect(store.load).toHaveBeenCalledOnce()
       expect(store.load).toHaveBeenCalledWith('sess-abc')
       expect(store.save).toHaveBeenCalledOnce()
-      expect(store.save).toHaveBeenCalledWith('sess-abc', {
+      expect(store.save).toHaveBeenCalledWith('sess-abc', expect.objectContaining({
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: {
+        finalState: {
           $interrupt: null,
           $interruptResponses: { q1: 'Alice' },
           count: 5,
         },
-      })
+      }))
     })
 
     it('accumulates into existing $interruptResponses instead of overwriting', async () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: {
+        initialState: {},
+        finalState: {
           $interrupt: { interruptId: 'q2', prompt: 'Age?' },
           $interruptResponses: { q1: 'existing' },
         },
@@ -112,7 +138,7 @@ describe('injectInterruptResponse', () => {
       expect(store.save).toHaveBeenCalledWith(
         'sess-abc',
         expect.objectContaining({
-          state: { $interrupt: null, $interruptResponses: { q1: 'existing', q2: 42 } },
+          finalState: { $interrupt: null, $interruptResponses: { q1: 'existing', q2: 42 } },
         }),
       )
     })
@@ -121,9 +147,14 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
-        state: {
+        initialState: {},
+        finalState: {
           $interrupt: { interruptId: 'q1', prompt: '?' },
           $interruptResponses: {},
         },
@@ -157,30 +188,17 @@ describe('injectInterruptResponse', () => {
       expect(store.save).not.toHaveBeenCalled()
     })
 
-    it('rejects with NoInterruptError when session phase is "in-flight"', async () => {
-      // arrange
-      const store = makeStubStore()
-      store.load.mockResolvedValue({
-        phase: 'in-flight',
-        step: 'ask',
-        state: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
-      })
-      store.save.mockResolvedValue(undefined)
-
-      // act & assert
-      await expect(
-        injectInterruptResponse(store, 'sess-abc', 'q1', 'Alice'),
-      ).rejects.toThrow(NoInterruptError)
-      expect(store.save).not.toHaveBeenCalled()
-    })
-
     it('rejects with NoInterruptError when session phase is "completed"', async () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'completed',
-        step: null,
-        state: { $interrupt: null, $interruptResponses: {} },
+        initialState: {},
+        finalState: { $interrupt: null, $interruptResponses: {} },
       })
       store.save.mockResolvedValue(undefined)
 
@@ -195,10 +213,15 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: { $interrupt: null, $interruptResponses: { q1: 'Alice' } },
+        initialState: {},
+        finalState: { $interrupt: null, $interruptResponses: { q1: 'Alice' } },
       })
       store.save.mockResolvedValue(undefined)
 
@@ -213,10 +236,15 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        runId: 'r1',
+        sessionId: 'sess-abc',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
+        initialState: {},
+        finalState: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
       })
       store.save.mockResolvedValue(undefined)
 
@@ -430,16 +458,26 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
     store.load
       .mockResolvedValueOnce({
+        runId: 'r1',
+        sessionId: 'sess-sync',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
+        initialState: {},
+        finalState: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
       })
       .mockResolvedValueOnce({
+        runId: 'r1',
+        sessionId: 'sess-sync',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: { $interrupt: null, $interruptResponses: { q1: 'Alice' } },
+        initialState: {},
+        finalState: { $interrupt: null, $interruptResponses: { q1: 'Alice' } },
       })
     store.save.mockResolvedValue(undefined)
 
@@ -476,10 +514,15 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
 
     const pausedSession = {
+      runId: 'r1',
+      sessionId: 'sess-twoload',
+      startedAt: '2026-01-01T00:00:00Z',
+      settledAt: '2026-01-01T00:01:00Z',
       phase: 'paused' as const,
       step: 'ask',
       signal: '$interrupt',
-      state: {
+      initialState: {},
+      finalState: {
         $interrupt: { interruptId: 'q1', prompt: 'Name?' },
         $interruptResponses: {},
         name: null,
@@ -488,7 +531,7 @@ describe('agent.resume() success path', () => {
     store.load.mockResolvedValueOnce(pausedSession)
     store.load.mockResolvedValueOnce({
       ...pausedSession,
-      state: { $interrupt: null, $interruptResponses: { q1: 'Alice' }, name: null },
+      finalState: { $interrupt: null, $interruptResponses: { q1: 'Alice' }, name: null },
     })
     store.save.mockResolvedValue(undefined)
 
@@ -515,7 +558,7 @@ describe('agent.resume() success path', () => {
     expect(store.save).toHaveBeenCalledWith(
       'sess-twoload',
       expect.objectContaining({
-        state: expect.objectContaining({
+        finalState: expect.objectContaining({
           $interrupt: null,
           $interruptResponses: { q1: 'Alice' },
         }),
@@ -530,19 +573,29 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
     store.load
       .mockResolvedValueOnce({
+        runId: 'r1',
+        sessionId: 'sess-chain',
+        startedAt: '2026-01-01T00:00:00Z',
+        settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: {
+        initialState: {},
+        finalState: {
           $interrupt: { interruptId: '$auto:0', prompt: 'First?' },
           $interruptResponses: {},
         },
       })
       .mockResolvedValueOnce({
+        runId: 'r2',
+        sessionId: 'sess-chain',
+        startedAt: '2026-01-01T00:02:00Z',
+        settledAt: '2026-01-01T00:03:00Z',
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
-        state: {
+        initialState: {},
+        finalState: {
           $interrupt: { interruptId: '$auto:1', prompt: 'Second?' },
           $interruptResponses: { '$auto:0': 'A' },
         },
@@ -589,16 +642,26 @@ describe('agent.resume() ctx isolation', () => {
 
     const store = makeStubStore()
     store.load.mockResolvedValueOnce({
+      runId: 'r1',
+      sessionId: 'sess-ctx',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      settledAt: '2026-01-01T00:01:00.000Z',
       phase: 'paused',
       step: 'check',
       signal: '$interrupt',
-      state: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
+      initialState: {},
+      finalState: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
     })
     store.load.mockResolvedValueOnce({
+      runId: 'r2',
+      sessionId: 'sess-ctx',
+      startedAt: '2026-01-01T00:02:00.000Z',
+      settledAt: '2026-01-01T00:03:00.000Z',
       phase: 'paused',
       step: 'check',
       signal: '$interrupt',
-      state: { $interrupt: null, $interruptResponses: { q1: 'response' } },
+      initialState: {},
+      finalState: { $interrupt: null, $interruptResponses: { q1: 'response' } },
     })
     store.save.mockResolvedValue(undefined)
 
@@ -626,7 +689,127 @@ describe('agent.resume() ctx isolation', () => {
 })
 
 // -----------------------------------------------------------------------
-// Group 10: Public API export
+// Group 10: injectInterruptResponse — error cases (F_RH)
+// -----------------------------------------------------------------------
+
+describe('injectInterruptResponse — error cases', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('throws NoInterruptError when store.load returns null', async () => {
+    // arrange
+    const store = makeStubStore()
+    store.load.mockResolvedValue(null)
+
+    // act & assert
+    await expect(injectInterruptResponse(store, 'sid-missing', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+  })
+
+  it('throws NoInterruptError when loaded StoredRun has phase "completed"', async () => {
+    // arrange
+    const completedRun = makeStoredRun({ phase: 'completed' })
+    const store = makeStubStore()
+    store.load.mockResolvedValue(completedRun)
+
+    // act & assert
+    await expect(injectInterruptResponse(store, 'sid-done', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+  })
+
+  it('throws NoInterruptError when finalState.$interrupt is null', async () => {
+    // arrange
+    const pausedRun = makeStoredRun({ phase: 'paused', finalState: { $interrupt: null }, step: 'stepA' })
+    const store = makeStubStore()
+    store.load.mockResolvedValue(pausedRun)
+
+    // act & assert
+    await expect(injectInterruptResponse(store, 'sid-no-interrupt', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+  })
+
+  it('throws NoInterruptError when $interrupt.interruptId does not match the provided interruptId', async () => {
+    // arrange
+    const pausedRun = makeStoredRun({
+      phase: 'paused',
+      finalState: { $interrupt: { interruptId: 'iid-actual', prompt: 'what?' } },
+      step: 'stepA',
+    })
+    const store = makeStubStore()
+    store.load.mockResolvedValue(pausedRun)
+
+    // act & assert
+    await expect(injectInterruptResponse(store, 'sid-mismatch', 'iid-wrong', 'response')).rejects.toThrow(NoInterruptError)
+  })
+})
+
+// -----------------------------------------------------------------------
+// Group 11: injectInterruptResponse — successful injection (F_RH)
+// -----------------------------------------------------------------------
+
+describe('injectInterruptResponse — successful injection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('saves updated StoredRun with $interrupt null and $interruptResponses[interruptId] = response', async () => {
+    // arrange
+    const pausedRun = makeStoredRun({
+      phase: 'paused',
+      finalState: {
+        x: 1,
+        $interrupt: { interruptId: 'iid-42', prompt: 'pick a color' },
+      },
+      step: 'stepA',
+    })
+    const store = makeStubStore()
+    store.load.mockResolvedValue(pausedRun)
+    store.save.mockResolvedValue(undefined)
+
+    // act
+    await injectInterruptResponse(store, pausedRun.sessionId, 'iid-42', 'blue')
+
+    // assert
+    expect(store.save).toHaveBeenCalledOnce()
+    const saved = store.save.mock.calls[0]![1] as Record<string, unknown>
+    const finalState = saved['finalState'] as Record<string, unknown>
+    expect(finalState['$interrupt']).toBeNull()
+    expect((finalState['$interruptResponses'] as Record<string, unknown>)['iid-42']).toBe('blue')
+    expect(finalState['x']).toBe(1)
+  })
+
+  it('preserves identity fields from loaded record unchanged in saved record', async () => {
+    // arrange
+    const pausedRun: StoredRun = {
+      runId: 'run-preserve-me',
+      sessionId: 'sid-preserve-me',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      settledAt: '2026-01-01T00:05:00.000Z',
+      phase: 'paused',
+      initialState: { a: 100 },
+      finalState: { a: 100, $interrupt: { interruptId: 'iid-99', prompt: 'q' } },
+      step: 'stepZ',
+      signal: '$interrupt',
+    }
+    const store = makeStubStore()
+    store.load.mockResolvedValue(pausedRun)
+    store.save.mockResolvedValue(undefined)
+
+    // act
+    await injectInterruptResponse(store, 'sid-preserve-me', 'iid-99', 42)
+
+    // assert
+    const saved = store.save.mock.calls[0]![1] as StoredRun
+    expect(saved.runId).toBe('run-preserve-me')
+    expect(saved.sessionId).toBe('sid-preserve-me')
+    expect(saved.startedAt).toBe('2026-01-01T00:00:00.000Z')
+    expect(saved.settledAt).toBe('2026-01-01T00:05:00.000Z')
+    expect(saved.initialState).toEqual({ a: 100 })
+    expect(saved.step).toBe('stepZ')
+    expect(saved.signal).toBe('$interrupt')
+  })
+})
+
+// -----------------------------------------------------------------------
+// Group 12: Public API export
 // -----------------------------------------------------------------------
 
 describe('Public API export', () => {

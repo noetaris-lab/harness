@@ -10,17 +10,24 @@ type SchemaLike = Record<string, {
 // -----------------------------------------------------------------------
 
 export interface SessionStore {
-  load(sessionId: string): Promise<StoredSession | null>
-  save(sessionId: string, session: StoredSession): Promise<void>
+  load(sessionId: string): Promise<StoredRun | null>
+  save(sessionId: string, run: StoredRun): Promise<void>
+  loadHistory?(sessionId: string): Promise<StoredRun[]>
+  branch?(sessionId: string, runId: string): Promise<string>
 }
 
 // -----------------------------------------------------------------------
-// StoredSession — the serialized session record
+// StoredRun — the per-run serialized record (replaces StoredSession)
 // -----------------------------------------------------------------------
 
-export interface StoredSession {
-  readonly phase: 'in-flight' | 'paused' | 'completed'
-  readonly state: Record<string, unknown>
+export interface StoredRun {
+  readonly runId: string
+  readonly sessionId: string
+  readonly startedAt: string
+  readonly settledAt: string
+  readonly phase: 'paused' | 'completed'
+  readonly initialState: Record<string, unknown>
+  readonly finalState: Record<string, unknown>
   readonly signal?: string
   readonly step?: string
 }
@@ -39,13 +46,9 @@ export type SessionPhase =
 // storedSessionToPhase — converts a raw load result to SessionPhase
 // -----------------------------------------------------------------------
 
-export function storedSessionToPhase(loaded: StoredSession | null): SessionPhase {
+export function storedSessionToPhase(loaded: StoredRun | null): SessionPhase {
   if (loaded === null) {
     return { phase: 'fresh' }
-  }
-
-  if (loaded.phase === 'in-flight') {
-    return { phase: 'in-flight', step: null }
   }
 
   if (loaded.phase === 'paused') {
@@ -68,7 +71,7 @@ export function storedSessionToPhase(loaded: StoredSession | null): SessionPhase
 // -----------------------------------------------------------------------
 
 export function initializeState(
-  stored: StoredSession | null,
+  stored: StoredRun | null,
   initialStateArg: Record<string, unknown>,
   schema: SchemaLike | undefined,
 ): Record<string, unknown> {
@@ -107,28 +110,28 @@ function buildFreshState(
 }
 
 function buildResumedState(
-  stored: StoredSession,
+  stored: StoredRun,
   initialStateArg: Record<string, unknown>,
   argKeys: Set<string>,
   schema: SchemaLike | undefined,
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...stored.state }
+  const result: Record<string, unknown> = { ...stored.finalState }
 
   // Apply initialStateArg fields on top of stored state
   for (const key of argKeys) {
     const fieldDef = schema?.[key]
     if (fieldDef?.reduce !== undefined) {
-      result[key] = fieldDef.reduce(stored.state[key], initialStateArg[key])
+      result[key] = fieldDef.reduce(stored.finalState[key], initialStateArg[key])
     } else {
       result[key] = initialStateArg[key]
     }
   }
 
-  // Apply schema defaults for keys absent from both stored.state and initialStateArg
+  // Apply schema defaults for keys absent from both stored.finalState and initialStateArg
   if (schema !== undefined) {
     for (const key of Object.keys(schema)) {
       if (argKeys.has(key)) continue
-      if (key in stored.state) continue
+      if (key in stored.finalState) continue
       const field = schema[key]
       if (field !== undefined && field.default !== undefined) {
         result[key] = field.default()

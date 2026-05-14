@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { FieldDefinition } from '../harness/state-field.js'
 import type { ProviderEntry } from '../harness/harness-builder.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
@@ -5,7 +6,7 @@ import type { LoopResult } from '../loop/loop-executor.js'
 import { runLoop } from '../loop/loop-executor.js'
 import {
   type SessionStore,
-  type StoredSession,
+  type StoredRun,
   type SessionPhase,
   initializeState,
   storedSessionToPhase,
@@ -20,8 +21,8 @@ export interface SessionRunOptions {
   /** Checked at the top of each loop iteration; returning true halts the run. */
   readonly shouldStop?: () => boolean
   /**
-   * Called if the terminal phase save fails (phase: 'persist').
-   * The run result is still returned after this callback fires.
+   * Called if the session store fails. `phase` is `'load'` (store failed at run start)
+   * or `'persist'` (store failed at run end/pause). Run result is still returned.
    */
   readonly onStoreError?: (error: unknown, phase: 'load' | 'persist') => void
   /** Called just before each step executes. Used by RunHandle to track currentStep and fire onBeforeStep. */
@@ -103,7 +104,7 @@ export async function runWithSession(
 
   // Load phase — on failure: fire onStoreError('load') and return synthetic error result
   // Run never begins; 'await run' always resolves (never rejects) per docs/agent.md guarantee
-  let loaded: StoredSession | null
+  let loaded: StoredRun | null
   try {
     loaded = await store.load(sessionId)
   } catch (error: unknown) {
@@ -114,30 +115,44 @@ export async function runWithSession(
     return { state: failState, signal: '$error', paused: false, cursor: null }
   }
 
+  // Generate a fresh runId for this agent.run() invocation — one UUID per runWithSession call
+  const runId = randomUUID()
+
   // Merge stored snapshot (or null for fresh) with caller-supplied initial state
   const state = initializeState(loaded, initialStateArg, schema)
-
-  // In-flight save: shallow copy captures state before runLoop mutates it in place
-  const snapshot = { ...state }
-  await store.save(sessionId, { phase: 'in-flight', state: snapshot })
+  // Snapshot before runLoop — runLoop mutates state in place so we must copy before execution
+  const initialStateSnapshot = { ...state }
+  const startedAt = new Date().toISOString()
 
   // Execute — errors from runLoop propagate uncaught
   const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, loaded?.step, options)
 
+  const settledAt = new Date().toISOString()
+
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {
     if (result.paused) {
-      const saved: StoredSession = {
+      const saved: StoredRun = {
+        runId,
+        sessionId,
+        startedAt,
+        settledAt,
         phase: 'paused',
-        state: result.state,
+        initialState: initialStateSnapshot,
+        finalState: result.state,
         step: result.cursor!,
         ...(result.signal !== null ? { signal: result.signal } : {}),
       }
       await store.save(sessionId, saved)
     } else {
-      const saved: StoredSession = {
+      const saved: StoredRun = {
+        runId,
+        sessionId,
+        startedAt,
+        settledAt,
         phase: 'completed',
-        state: result.state,
+        initialState: initialStateSnapshot,
+        finalState: result.state,
         ...(result.signal !== null ? { signal: result.signal } : {}),
       }
       await store.save(sessionId, saved)
