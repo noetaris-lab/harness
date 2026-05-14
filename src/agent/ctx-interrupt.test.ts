@@ -372,7 +372,7 @@ describe('runLoop', () => {
       const ctx = { sessionId: 'test' }
 
       // act
-      await runLoop(graph, state, ctx, undefined, undefined, undefined, 'process')
+      await runLoop(graph, state, ctx, undefined, undefined, 'process')
 
       // assert
       expect(initRun).not.toHaveBeenCalled()

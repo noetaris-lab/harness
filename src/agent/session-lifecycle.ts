@@ -24,8 +24,16 @@ export interface SessionRunOptions {
    * The run result is still returned after this callback fires.
    */
   readonly onStoreError?: (error: unknown, phase: 'load' | 'persist') => void
-  /** Called just before each step executes. Used by RunHandle to track currentStep. */
-  readonly onBeforeStep?: (name: string) => void
+  /** Called just before each step executes. Used by RunHandle to track currentStep and fire onBeforeStep. */
+  readonly onBeforeStep?: (name: string, state: Record<string, unknown>) => void
+  /** Called after a step's run completes successfully and applyUpdate has been applied. */
+  readonly onAfterStep?: (name: string, state: Record<string, unknown>) => void
+  /** Called immediately when a step's run throws a non-interrupt error, before error routing. */
+  readonly onError?: (error: unknown, stepName: string) => void
+  /** Called when the loop exits via .on(signal).end() (paused: false). */
+  readonly onComplete?: (state: Record<string, unknown>, signal: string) => void
+  /** Called when ctx.interrupt() pauses the run (isInterruptPause is true). */
+  readonly onInterrupt?: (prompt: unknown, interruptId: string) => void
 }
 
 // -----------------------------------------------------------------------
@@ -90,7 +98,7 @@ export async function runWithSession(
 ): Promise<LoopResult> {
   if (store === undefined) {
     const state = initializeState(null, initialStateArg, schema)
-    return runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep)
+    return runLoop(graph, state, ctx, schema, options?.shouldStop, undefined, options)
   }
 
   // Load phase — on failure: fire onStoreError('load') and return synthetic error result
@@ -114,7 +122,7 @@ export async function runWithSession(
   await store.save(sessionId, { phase: 'in-flight', state: snapshot })
 
   // Execute — errors from runLoop propagate uncaught
-  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep, loaded?.step)
+  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, loaded?.step, options)
 
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {

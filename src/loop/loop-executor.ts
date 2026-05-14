@@ -73,15 +73,24 @@ function applyUpdate(
 // Public API
 // -----------------------------------------------------------------------
 
+export interface LoopCallbacks {
+  onBeforeStep?: (name: string, state: Record<string, unknown>) => void
+  onAfterStep?: (name: string, state: Record<string, unknown>) => void
+  onError?: (error: unknown, stepName: string) => void
+  onComplete?: (state: Record<string, unknown>, signal: string) => void
+  onInterrupt?: (prompt: unknown, interruptId: string) => void
+}
+
 export async function runLoop(
   graph: LoopDefinition,
   state: Record<string, unknown>,
   ctx: Record<string, unknown> & { readonly sessionId: string },
   schema: Record<string, FieldDefinition<any>> | undefined, // any: see applyUpdate comment
   shouldStop?: () => boolean,
-  onBeforeStep?: (name: string) => void,
   startCursor?: string,
+  callbacks?: LoopCallbacks,
 ): Promise<LoopResult> {
+  const { onBeforeStep, onAfterStep, onError, onComplete, onInterrupt } = callbacks ?? {}
   const implicitNextMap = buildImplicitNextMap(graph)
 
   // Initialize framework-reserved fields if absent
@@ -101,7 +110,8 @@ export async function runLoop(
       return { state, signal: null, cursor, paused: true }
     }
 
-    onBeforeStep?.(cursor)
+    // pass a shallow snapshot so onBeforeStep observers see pre-run values even after state is mutated
+    onBeforeStep?.(cursor, { ...state })
 
     const step = graph.steps.find(s => s.name === cursor)!
 
@@ -128,16 +138,19 @@ export async function runLoop(
       } catch (e) {
         if (isInterruptPause(e)) {
           // InterruptPause was caught: $interrupt already written by createInterruptFn
+          onInterrupt?.(e.prompt, e.interruptId)
           return { state, signal: '$interrupt', cursor, paused: true }
         }
         // domain error: normalize to Error and set $error; do not rethrow
         state.$error = e instanceof Error ? e : new Error(String(e))
+        onError?.(state.$error, cursor)
       }
     }
 
     if (runSucceeded) {
       // clear $error after a successful run, before calling route
       state.$error = null
+      onAfterStep?.(cursor, state)
     }
 
     // route is called when: route exists AND (run succeeded, step has no run, OR step opted in
@@ -162,6 +175,7 @@ export async function runLoop(
         throw new UnknownSignalError(cursor, signal)
       }
       if (transition.target.kind === 'end') {
+        onComplete?.(state, signal)
         return { state, signal, cursor: null, paused: false }
       }
       cursor = transition.target.name

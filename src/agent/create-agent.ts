@@ -14,6 +14,7 @@ import { createRunHandle, type RunHandle, type RunOutcome } from './run-handle.j
 import { NoInterruptError, injectInterruptResponse } from './interrupt-resume.js'
 import { SessionInFlightError, SessionPendingInterruptError } from './concurrency-errors.js'
 import { randomUUID } from 'node:crypto'
+import { extractRunEvents } from './event-callbacks.js'
 
 // -----------------------------------------------------------------------
 // Agent — the minimal public object returned by createAgent
@@ -253,6 +254,8 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           ...Object.fromEntries(agentInternals.resolvedProviders),
           sessionId: sId,
         }
+        // cross-process resume: ctx.events is empty (no events from the original run are available)
+        ;(agentCtx as Record<string, unknown>)['events'] = {} // as: Record<string, unknown> allows adding framework-injected fields to ctx
         const r = await runWithSession(
           capturedStore,
           sId,
@@ -262,7 +265,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           agentCtx,
           {
             shouldStop: () => flag.stopped,
-            onBeforeStep: (n: string) => { ref.current = n },
+            onBeforeStep: (n: string) => { ref.current = n }, // _state unused in cross-process resume — no events available
           },
         )
         if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
@@ -340,12 +343,28 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       }
 
       // Extract event callbacks from resources (reserved key)
-      const events = (resources['events'] ?? {}) as Record<string, ((...args: unknown[]) => void) | undefined>
+      const events = extractRunEvents(resources)
+
+      // Inject LLM/tool callbacks into ctx so steps and adapters can fire them
+      ;(ctx as Record<string, unknown>)['events'] = { // as: Record<string, unknown> allows adding framework-injected fields to ctx without widening the user-defined Ctx type parameter
+        onLlmCall: events.onLlmCall,
+        onLlmResponse: events.onLlmResponse,
+        onToolCall: events.onToolCall,
+        onToolResult: events.onToolResult,
+      }
 
       const options: SessionRunOptions = {
         shouldStop: () => stopFlag.stopped,
-        onBeforeStep: (name: string) => { stepRef.current = name },
-        onStoreError: (error, phase) => { events['onStoreError']?.(error, phase) },
+        onBeforeStep: (name: string, state: Record<string, unknown>) => {
+          stepRef.current = name
+          events.onBeforeStep?.(name, state)
+        },
+        // spread optional event callbacks only when defined (exactOptionalPropertyTypes requires omission, not undefined)
+        ...(events.onStoreError !== undefined ? { onStoreError: events.onStoreError } : {}),
+        ...(events.onAfterStep !== undefined ? { onAfterStep: events.onAfterStep } : {}),
+        ...(events.onError !== undefined ? { onError: events.onError } : {}),
+        ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
+        ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -399,8 +418,16 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                   ctx,
                   {
                     shouldStop: () => resumeStopFlag.stopped,
-                    onBeforeStep: (n: string) => { resumeStepRef.current = n },
-                    onStoreError: (error, phase) => { events['onStoreError']?.(error, phase) },
+                    onBeforeStep: (n: string, s: Record<string, unknown>) => {
+                      resumeStepRef.current = n
+                      events.onBeforeStep?.(n, s)
+                    },
+                    // spread optional event callbacks only when defined (exactOptionalPropertyTypes requires omission, not undefined)
+                    ...(events.onStoreError !== undefined ? { onStoreError: events.onStoreError } : {}),
+                    ...(events.onAfterStep !== undefined ? { onAfterStep: events.onAfterStep } : {}),
+                    ...(events.onError !== undefined ? { onError: events.onError } : {}),
+                    ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
+                    ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
                   },
                 )
                 if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -422,8 +449,17 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                 ctx,
                 agentInternals.stateSchema,
                 () => resumeStopFlag.stopped,
-                (n: string) => { resumeStepRef.current = n },
                 cursor,
+                {
+                  onBeforeStep: (n: string, s: Record<string, unknown>) => {
+                    resumeStepRef.current = n
+                    events.onBeforeStep?.(n, s)
+                  },
+                  ...(events.onAfterStep !== undefined ? { onAfterStep: events.onAfterStep } : {}),
+                  ...(events.onError !== undefined ? { onError: events.onError } : {}),
+                  ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
+                  ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
+                },
               )
               if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
               lastResult = { state: r.state, cursor: r.cursor }
