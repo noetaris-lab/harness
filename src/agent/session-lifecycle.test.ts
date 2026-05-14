@@ -443,27 +443,37 @@ describe('session-lifecycle', () => {
   // -----------------------------------------------------------------------
 
   describe('runWithSession — error handling', () => {
-    it('throws when store.load rejects and makes no in-flight save', async () => {
+    it('resolves with signal "$error" and fires onStoreError when store.load rejects, and makes no in-flight save', async () => {
       // arrange
       const loadError = new Error('load failed')
       const store = makeStubStore({ load: vi.fn().mockRejectedValue(loadError) })
+      const onStoreError = vi.fn()
       const graph = makeCompletingGraph()
       const ctx = { sessionId: 'sid-load-fail' }
 
-      // act & assert
-      await expect(runWithSession(store, 'sid-load-fail', graph, {}, undefined, ctx)).rejects.toThrow('load failed')
+      // act
+      const result = await runWithSession(store, 'sid-load-fail', graph, {}, undefined, ctx, { onStoreError })
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(result.paused).toBe(false)
+      expect(onStoreError).toHaveBeenCalledOnce()
+      expect(onStoreError).toHaveBeenCalledWith(expect.objectContaining({ cause: loadError }), 'load')
       expect(store.save).not.toHaveBeenCalled()
     })
 
-    it('throws when store.load rejects before any runLoop execution', async () => {
+    it('resolves with signal "$error" and does not call runLoop when store.load rejects', async () => {
       // arrange
       const store = makeStubStore({ load: vi.fn().mockRejectedValue(new Error('disk error')) })
       let loopCalled = false
       const graph = makeGraphWithSideEffect(() => { loopCalled = true })
       const ctx = { sessionId: 'sid-no-loop' }
 
-      // act & assert
-      await expect(runWithSession(store, 'sid-no-loop', graph, {}, undefined, ctx)).rejects.toThrow()
+      // act
+      const result = await runWithSession(store, 'sid-no-loop', graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBe('$error')
       expect(loopCalled).toBe(false)
     })
 

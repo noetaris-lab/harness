@@ -10,6 +10,7 @@ import {
   initializeState,
   storedSessionToPhase,
 } from './session-store.js'
+import { StoreLoadError } from './concurrency-errors.js'
 
 // -----------------------------------------------------------------------
 // SessionRunOptions — optional parameters for runWithSession
@@ -92,8 +93,18 @@ export async function runWithSession(
     return runLoop(graph, state, ctx, schema, options?.shouldStop, options?.onBeforeStep)
   }
 
-  // Load phase — rethrow on failure; run never begins if load fails
-  const loaded = await store.load(sessionId)
+  // Load phase — on failure: fire onStoreError('load') and return synthetic error result
+  // Run never begins; 'await run' always resolves (never rejects) per docs/agent.md guarantee
+  let loaded: StoredSession | null
+  try {
+    loaded = await store.load(sessionId)
+  } catch (error: unknown) {
+    const storeError = new StoreLoadError(error)
+    options?.onStoreError?.(storeError, 'load')
+    const failState = initializeState(null, initialStateArg, schema)
+    ;(failState as Record<string, unknown>)['$error'] = storeError
+    return { state: failState, signal: '$error', paused: false, cursor: null }
+  }
 
   // Merge stored snapshot (or null for fresh) with caller-supplied initial state
   const state = initializeState(loaded, initialStateArg, schema)

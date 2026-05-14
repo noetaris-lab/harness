@@ -686,18 +686,18 @@ describe('createAgent', () => {
         const agent = createAgent(h, {})
 
         // act
-        const callRun = () => agent.run({}, {
+        const run = agent.run({}, {
           model: 'gpt-4',
           sessionId: 'reserved-test',
           signal: new AbortController().signal,
           events: {},
         })
 
-        // assert
-        expect(callRun).not.toThrow()
+        // assert — synchronous throw would propagate out of agent.run() before returning a handle
+        expect(run).toBeDefined()
 
         // cleanup
-        await callRun()
+        await run
       })
     })
 
@@ -843,13 +843,13 @@ describe('createAgent', () => {
         const agent = createAgent(h, {})
 
         // act
-        const act = () => agent.run({}, { sessionId: 'reserved-only' })
+        const run = agent.run({}, { sessionId: 'reserved-only' })
 
-        // assert
-        expect(act).not.toThrow()
+        // assert — synchronous throw would propagate out of agent.run() before returning a handle
+        expect(run).toBeDefined()
 
         // cleanup
-        await agent.run({}, { sessionId: 'reserved-only' })
+        await run
       })
 
       it('no validation error when resources is empty and harness has no runtime slots', async () => {

@@ -12,6 +12,7 @@ import { resolveSessionStore, runWithSession, querySessionPhase, type SessionRun
 import { runLoop } from '../loop/loop-executor.js'
 import { createRunHandle, type RunHandle, type RunOutcome } from './run-handle.js'
 import { NoInterruptError, injectInterruptResponse } from './interrupt-resume.js'
+import { SessionInFlightError, SessionPendingInterruptError } from './concurrency-errors.js'
 import { randomUUID } from 'node:crypto'
 
 // -----------------------------------------------------------------------
@@ -224,6 +225,13 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   // Reserved keys are skipped during agent.run() resource validation
   const reservedRunKeys = new Set(['sessionId', 'signal', 'events'])
 
+  // one per agent instance; tracks all session IDs currently executing
+  const inFlightSessions = new Set<string>()
+
+  // one per agent instance; tracks session IDs paused on an unanswered interrupt
+  // cleared when agent.resume() or run.resume() is called; populated when a run settles with signal: "$interrupt"
+  const interruptPendingSessions = new Set<string>()
+
   // -----------------------------------------------------------------------
   // makeAgentResumeHandle — factory for cross-process resume RunHandles
   // -----------------------------------------------------------------------
@@ -238,28 +246,39 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
 
     const exec = (async (): Promise<RunOutcome> => {
       await Promise.resolve()
-      if (capturedStore === undefined) throw new NoInterruptError()
-      await injectInterruptResponse(capturedStore, sId, iId, resp)
-      const agentCtx: Record<string, unknown> & { readonly sessionId: string } = {
-        ...Object.fromEntries(agentInternals.resolvedProviders),
-        sessionId: sId,
+      try {
+        if (capturedStore === undefined) throw new NoInterruptError()
+        await injectInterruptResponse(capturedStore, sId, iId, resp)
+        const agentCtx: Record<string, unknown> & { readonly sessionId: string } = {
+          ...Object.fromEntries(agentInternals.resolvedProviders),
+          sessionId: sId,
+        }
+        const r = await runWithSession(
+          capturedStore,
+          sId,
+          agentInternals.loopDef,
+          {},
+          agentInternals.stateSchema,
+          agentCtx,
+          {
+            shouldStop: () => flag.stopped,
+            onBeforeStep: (n: string) => { ref.current = n },
+          },
+        )
+        if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
+        return { state: r.state, signal: r.signal }
+      } finally {
+        inFlightSessions.delete(sId)
       }
-      const r = await runWithSession(
-        capturedStore,
-        sId,
-        agentInternals.loopDef,
-        {},
-        agentInternals.stateSchema,
-        agentCtx,
-        {
-          shouldStop: () => flag.stopped,
-          onBeforeStep: (n: string) => { ref.current = n },
-        },
-      )
-      return { state: r.state, signal: r.signal }
     })()
 
-    const resumeFn = (r: unknown, i: string): RunHandle => makeAgentResumeHandle(r, sId, i)
+    const resumeFn = (r: unknown, i: string): RunHandle => {
+      // Synchronous fence — same invariant as agent.resume()
+      if (inFlightSessions.has(sId)) throw new SessionInFlightError(sId)
+      interruptPendingSessions.delete(sId)
+      inFlightSessions.add(sId)
+      return makeAgentResumeHandle(r, sId, i)
+    }
     return createRunHandle(sId, exec, flag, ref, resumeFn)
   }
 
@@ -293,6 +312,11 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       const sessionId =
         typeof resources['sessionId'] === 'string' ? resources['sessionId'] : randomUUID()
 
+      // Synchronous concurrency fences — must precede any await (per docs/agent.md Concurrency section)
+      if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
+      if (interruptPendingSessions.has(sessionId)) throw new SessionPendingInterruptError(sessionId)
+      inFlightSessions.add(sessionId)
+
       // AbortSignal wiring — register first to avoid race, then check already-aborted state
       const stopFlag = { stopped: false }
       const rawSignal = resources['signal']
@@ -315,9 +339,13 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         sessionId,
       }
 
+      // Extract event callbacks from resources (reserved key)
+      const events = (resources['events'] ?? {}) as Record<string, ((...args: unknown[]) => void) | undefined>
+
       const options: SessionRunOptions = {
         shouldStop: () => stopFlag.stopped,
         onBeforeStep: (name: string) => { stepRef.current = name },
+        onStoreError: (error, phase) => { events['onStoreError']?.(error, phase) },
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -327,66 +355,82 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       const execution = (async (): Promise<RunOutcome> => {
         // Yield so agent.run() can return the RunHandle before any loop iteration starts
         await Promise.resolve()
-        const r = await runWithSession(
-          capturedStore,
-          sessionId,
-          agentInternals.loopDef,
-          initialState,
-          agentInternals.stateSchema,
-          ctx,
-          options,
-        )
-        lastResult = { state: r.state, cursor: r.cursor }
-        return { state: r.state, signal: r.signal }
+        try {
+          const r = await runWithSession(
+            capturedStore,
+            sessionId,
+            agentInternals.loopDef,
+            initialState,
+            agentInternals.stateSchema,
+            ctx,
+            options,
+          )
+          if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
+          lastResult = { state: r.state, cursor: r.cursor }
+          return { state: r.state, signal: r.signal }
+        } finally {
+          inFlightSessions.delete(sessionId)
+        }
       })()
 
       // buildResumeFn — creates a recursive resumeFn for same-process chaining via run.resume()
       const buildResumeFn = (): ((response: unknown, interruptId: string) => RunHandle) => {
         return (response: unknown, interruptId: string): RunHandle => {
+          // Synchronous fence — same invariant as agent.run()
+          if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
+          interruptPendingSessions.delete(sessionId)
+          inFlightSessions.add(sessionId)
+
           const resumeStopFlag = { stopped: false }
           const resumeStepRef: { current: string | null } = { current: null }
 
           const resumeExecution = (async (): Promise<RunOutcome> => {
             await Promise.resolve()
+            try {
+              if (capturedStore !== undefined) {
+                // Cross-process path: inject response into store, reload, and re-run
+                await injectInterruptResponse(capturedStore, sessionId, interruptId, response)
+                const r = await runWithSession(
+                  capturedStore,
+                  sessionId,
+                  agentInternals.loopDef,
+                  {},
+                  agentInternals.stateSchema,
+                  ctx,
+                  {
+                    shouldStop: () => resumeStopFlag.stopped,
+                    onBeforeStep: (n: string) => { resumeStepRef.current = n },
+                    onStoreError: (error, phase) => { events['onStoreError']?.(error, phase) },
+                  },
+                )
+                if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
+                lastResult = { state: r.state, cursor: r.cursor }
+                return { state: r.state, signal: r.signal }
+              }
 
-            if (capturedStore !== undefined) {
-              // Cross-process path: inject response into store, reload, and re-run
-              await injectInterruptResponse(capturedStore, sessionId, interruptId, response)
-              const r = await runWithSession(
-                capturedStore,
-                sessionId,
+              // Same-process in-memory path: mutate shared state and re-run from cursor
+              const prev = lastResult
+              if (prev === null) throw new NoInterruptError()
+              const state = prev.state
+              const existing = (state.$interruptResponses as Record<string, unknown>) ?? {}
+              state.$interruptResponses = { ...existing, [interruptId]: response }
+              state.$interrupt = null
+              const cursor = prev.cursor ?? undefined
+              const r = await runLoop(
                 agentInternals.loopDef,
-                {},
-                agentInternals.stateSchema,
+                state,
                 ctx,
-                {
-                  shouldStop: () => resumeStopFlag.stopped,
-                  onBeforeStep: (n: string) => { resumeStepRef.current = n },
-                },
+                agentInternals.stateSchema,
+                () => resumeStopFlag.stopped,
+                (n: string) => { resumeStepRef.current = n },
+                cursor,
               )
+              if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
               lastResult = { state: r.state, cursor: r.cursor }
               return { state: r.state, signal: r.signal }
+            } finally {
+              inFlightSessions.delete(sessionId)
             }
-
-            // Same-process in-memory path: mutate shared state and re-run from cursor
-            const prev = lastResult
-            if (prev === null) throw new NoInterruptError()
-            const state = prev.state
-            const existing = (state.$interruptResponses as Record<string, unknown>) ?? {}
-            state.$interruptResponses = { ...existing, [interruptId]: response }
-            state.$interrupt = null
-            const cursor = prev.cursor ?? undefined
-            const r = await runLoop(
-              agentInternals.loopDef,
-              state,
-              ctx,
-              agentInternals.stateSchema,
-              () => resumeStopFlag.stopped,
-              (n: string) => { resumeStepRef.current = n },
-              cursor,
-            )
-            lastResult = { state: r.state, cursor: r.cursor }
-            return { state: r.state, signal: r.signal }
           })()
 
           return createRunHandle(sessionId, resumeExecution, resumeStopFlag, resumeStepRef, buildResumeFn())
@@ -397,6 +441,9 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     },
 
     resume: (response: unknown, sessionId: string, interruptId: string): RunHandle => {
+      if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
+      interruptPendingSessions.delete(sessionId)
+      inFlightSessions.add(sessionId)
       return makeAgentResumeHandle(response, sessionId, interruptId)
     },
 
