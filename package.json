@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Agent execution framework — harness implementation",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noetaris-lab/harness.git"
+  },
+  "homepage": "https://github.com/noetaris-lab/harness#readme",
+  "bugs": {
+    "url": "https://github.com/noetaris-lab/harness/issues"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -18,7 +26,9 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build && pnpm test",
+    "publish:npm": "pnpm publish --access public --no-git-checks"
   },
   "files": [
     "dist"
