@@ -398,70 +398,8 @@ describe('EventCallbacks', () => {
 
   })
 
-  // -----------------------------------------------------------------------
-  // Group 7: LLM/tool callback injection into ctx.events
-  // -----------------------------------------------------------------------
-
-  describe('ctx.events injection', () => {
-
-    it('injects all four LLM/tool callbacks into ctx.events with identity function references', async () => {
-      // arrange
-      const onLlmCall = vi.fn()
-      const onLlmResponse = vi.fn()
-      const onToolCall = vi.fn()
-      const onToolResult = vi.fn()
-      let capturedCtxEvents: unknown
-      const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtxEvents = ctx['events']; return {} })
-      const h = createHarness<Ctx>()({}).loop(l => l.start().step('step', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
-
-      // act
-      const run = agent.run({}, { events: { onLlmCall, onLlmResponse, onToolCall, onToolResult } })
-      await run
-
-      // assert
-      expect((capturedCtxEvents as any).onLlmCall).toBe(onLlmCall) // any: capturedCtxEvents is unknown; runtime shape is verified here
-      expect((capturedCtxEvents as any).onLlmResponse).toBe(onLlmResponse) // any: same
-      expect((capturedCtxEvents as any).onToolCall).toBe(onToolCall) // any: same
-      expect((capturedCtxEvents as any).onToolResult).toBe(onToolResult) // any: same
-    })
-
-    it('sets ctx.events to {} when no events key is present in resources', async () => {
-      // arrange
-      let capturedCtxEvents: unknown = 'not-set'
-      const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtxEvents = ctx['events']; return {} })
-      const h = createHarness<Ctx>()({}).loop(l => l.start().step('step', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
-
-      // act
-      const run = agent.run({}, {})
-      await run
-
-      // assert
-      expect(capturedCtxEvents).toEqual({})
-      expect(typeof capturedCtxEvents).toBe('object')
-    })
-
-    it('populates present callbacks and leaves absent callbacks as undefined in ctx.events', async () => {
-      // arrange
-      const onLlmCall = vi.fn()
-      let capturedCtxEvents: Record<string, unknown> | undefined
-      const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtxEvents = ctx['events'] as Record<string, unknown>; return {} })
-      const h = createHarness<Ctx>()({}).loop(l => l.start().step('step', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
-
-      // act
-      const run = agent.run({}, { events: { onLlmCall } })
-      await run
-
-      // assert
-      expect(capturedCtxEvents!.onLlmCall).toBe(onLlmCall)
-      expect(capturedCtxEvents!.onLlmResponse).toBeUndefined()
-      expect(capturedCtxEvents!.onToolCall).toBeUndefined()
-      expect(capturedCtxEvents!.onToolResult).toBeUndefined()
-    })
-
-  })
+  // Group 7 (ctx.events injection) was removed — onLlmCall/onLlmResponse/onToolCall/onToolResult
+  // are no longer part of RunEvents and ctx.events is no longer injected. See F14.
 
   // -----------------------------------------------------------------------
   // Group 8: Resume paths and event continuity
@@ -491,10 +429,10 @@ describe('EventCallbacks', () => {
       expect(outcome.signal).toBe('done')
     })
 
-    it('cross-process agent.resume() with no events in resources sets ctx.events to {}', async () => {
+    it('cross-process agent.resume() — ctx does not have an events property (ctx.events was removed by F14)', async () => {
       // arrange
-      let capturedCtxEvents: unknown = 'not-set'
-      const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtxEvents = ctx['events']; return {} })
+      let capturedCtx: Record<string, unknown> | null = null
+      const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtx = ctx; return {} })
       const stubStore: SessionStore = makeStubStore({
         load: vi.fn().mockResolvedValue({
           runId: 'r1',
@@ -516,7 +454,7 @@ describe('EventCallbacks', () => {
       const outcome = await resumeHandle
 
       // assert
-      expect(capturedCtxEvents).toEqual({})
+      expect('events' in capturedCtx!).toBe(false)
       expect(outcome.signal).toBe('done')
     })
 

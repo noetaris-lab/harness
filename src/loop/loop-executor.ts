@@ -1,6 +1,7 @@
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
 import { createInterruptFn, isInterruptPause } from '../agent/ctx-interrupt.js'
+import { createEmitFn } from '../agent/ctx-emit.js'
 
 // -----------------------------------------------------------------------
 // LoopResult
@@ -79,6 +80,11 @@ export interface LoopCallbacks {
   onError?: (error: unknown, stepName: string) => void
   onComplete?: (state: Record<string, unknown>, signal: string) => void
   onInterrupt?: (prompt: unknown, interruptId: string) => void
+  /**
+   * Listeners for user-emitted events (ctx.emit). Keyed by event name.
+   * A missing key means ctx.emit(name) is a no-op for that name.
+   */
+  listeners?: Record<string, (payload: unknown) => void>
 }
 
 export async function runLoop(
@@ -102,6 +108,7 @@ export async function runLoop(
   const callCountRef = { current: 0 }
   // mutate ctx in-place so step.run receives the same object reference (invariant for callers)
   ;(ctx as Record<string, unknown>)['interrupt'] = createInterruptFn(state, callCountRef) // as: Record<string, unknown> allows adding framework-injected fields to ctx
+  ;(ctx as Record<string, unknown>)['emit'] = createEmitFn(callbacks?.listeners ?? {}) // as: see interrupt line comment
 
   let cursor = startCursor ?? graph.entryStep!
 

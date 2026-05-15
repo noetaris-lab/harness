@@ -1,22 +1,17 @@
 /**
- * All ten event callbacks for a single agent.run() invocation.
+ * Framework-fired event callbacks for a single agent.run() invocation.
  * All fields are optional — omit any you do not need.
  * Callbacks are fire-and-forget; their return value is ignored.
  * Scoped to the run — released when the run settles.
+ *
+ * Note: user-emitted events (formerly onLlmCall etc.) are replaced by
+ * ctx.emit(name, payload) + the 'listeners' resource key. See agent.md.
  */
 export interface RunEvents {
   /** Called just before a step's run function is invoked. */
   onBeforeStep?: (name: string, state: Record<string, unknown>) => void
   /** Called just after a step's run function completes successfully (state update applied). */
   onAfterStep?: (name: string, state: Record<string, unknown>) => void
-  /** Called by user code (e.g. an LLM adapter) when an LLM call is about to be made. */
-  onLlmCall?: (messages: unknown) => void
-  /** Called by user code (e.g. an LLM adapter) when an LLM response has been received. */
-  onLlmResponse?: (response: unknown) => void
-  /** Called by user code (e.g. a tool adapter) when a tool call is about to be made. */
-  onToolCall?: (tool: string, args: unknown) => void
-  /** Called by user code (e.g. a tool adapter) when a tool result has been received. */
-  onToolResult?: (tool: string, result: unknown) => void
   /**
    * Called when the loop exits normally via .on(signal).end().
    * Not called for paused outcomes (stop, abort, error, interrupt).

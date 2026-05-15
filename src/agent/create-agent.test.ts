@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, expectTypeOf } from 'vitest'
 import {
   createAgent,
   getAgentInternals,
@@ -12,6 +12,8 @@ import {
   UnknownRunSlotError,
 } from './create-agent.js'
 import { NoInterruptError } from './interrupt-resume.js'
+import type { RunEvents } from './event-callbacks.js'
+import type { SessionStore, StoredRun } from './session-store.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
 import { HarnessInternalsError } from '../harness/harness-builder.js'
 import { required, runtime } from '../harness/ctx-markers.js'
@@ -979,6 +981,466 @@ describe('createAgent', () => {
         expect(ctxRefs).toHaveLength(2)
         expect(ctxRefs[0]).not.toBe(ctxRefs[1])
       })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // F14 — run-listeners component tests
+  // -----------------------------------------------------------------------
+
+  // Shared helper for cross-process resume tests (Case 5.1)
+  function makeStubStore(overrides: Partial<SessionStore> = {}): SessionStore {
+    return {
+      load: vi.fn().mockResolvedValue(null),
+      save: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    }
+  }
+
+  describe("Group: 'listeners' as a reserved key", () => {
+    it("harness slot named 'listeners' is NOT injected into ctx when listeners key is also passed in resources", async () => {
+      // arrange
+      let capturedCtx: Record<string, unknown> | null = null
+      const h = createHarness<{ listeners: Record<string, unknown> }>()()
+        .provide('listeners', runtime())
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                capturedCtx = ctx as Record<string, unknown>
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+      const fn = vi.fn()
+
+      // act
+      await agent.run({}, { listeners: { 'x': fn } })
+
+      // assert
+      expect(capturedCtx!['listeners']).toBeUndefined()
+    })
+
+    it("ctx.emit dispatches to the listeners map from resources even when a harness slot named 'listeners' exists", async () => {
+      // arrange
+      const h = createHarness<{ listeners: Record<string, unknown> }>()()
+        .provide('listeners', runtime())
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;(ctx.emit as (name: string, payload?: unknown) => void)('x', 'payload')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+      const fn = vi.fn()
+
+      // act
+      await agent.run({}, { listeners: { 'x': fn } })
+
+      // assert
+      expect(fn).toHaveBeenCalledOnce()
+      expect(fn).toHaveBeenCalledWith('payload')
+    })
+
+    it("no listeners key and no harness declaration — no error and ctx.emit is a no-op", async () => {
+      // arrange
+      const h = createHarness<{ model: string }>()()
+        .provide('model', runtime())
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit?.('x', 'val')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const result = await agent.run({}, { model: 'gpt-4' })
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it("passing listeners key without any harness declaration does not throw UnknownRunSlotError", async () => {
+      // arrange
+      const h = createHarness<{ model: string }>()()
+        .provide('model', runtime())
+        .loop(l => {
+          l.start()
+            .step('go', { run: async () => ({}), route: () => 'done' })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+      const fn = vi.fn()
+
+      // act
+      const promise = agent.run({}, { model: 'gpt-4', listeners: { 'x': fn } })
+
+      // assert
+      await expect(promise).resolves.toBeDefined()
+    })
+  })
+
+  describe('Group: listeners extraction and dispatch through the loop', () => {
+    it('ctx.emit fires the registered listener with the supplied payload', async () => {
+      // arrange
+      const fn = vi.fn()
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('llm:call', { model: 'gpt-4' })
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      await agent.run({}, { listeners: { 'llm:call': fn } })
+
+      // assert
+      expect(fn).toHaveBeenCalledOnce()
+      expect(fn).toHaveBeenCalledWith({ model: 'gpt-4' })
+    })
+
+    it('ctx.emit with unregistered name does not call fn and run completes normally', async () => {
+      // arrange
+      const fn = vi.fn()
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('other', 'value')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const result = await agent.run({}, { listeners: { 'llm:call': fn } })
+
+      // assert
+      expect(fn).not.toHaveBeenCalled()
+      expect(result.signal).toBe('done')
+    })
+
+    it('ctx.emit is a no-op when resources has no listeners key', async () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('x', 99)
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const result = await agent.run({}, {})
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it('ctx.emit is a no-op when listeners is an empty object', async () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('x', 99)
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const result = await agent.run({}, { listeners: {} })
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it('listener is called once per ctx.emit call across multiple steps in the same run', async () => {
+      // arrange
+      const fn = vi.fn()
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('stepA', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('e', 1)
+                return {}
+              },
+            })
+            .next('stepB')
+            .step('stepB', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('e', 2)
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      await agent.run({}, { listeners: { 'e': fn } })
+
+      // assert
+      expect(fn).toHaveBeenCalledTimes(2)
+      expect(fn).toHaveBeenNthCalledWith(1, 1)
+      expect(fn).toHaveBeenNthCalledWith(2, 2)
+    })
+  })
+
+  describe('Group: ctx.events removal — LLM/tool callbacks removed', () => {
+    it("ctx inside a step does not have an 'events' property after RunListeners change", async () => {
+      // arrange
+      let capturedCtx: Record<string, unknown> | null = null
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                capturedCtx = ctx as Record<string, unknown>
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      await agent.run({}, { events: { onBeforeStep: () => {} } })
+
+      // assert
+      expect('events' in capturedCtx!).toBe(false)
+    })
+
+    it('TypeScript rejects events object containing onLlmCall at compile time', () => {
+      // arrange & act & assert
+      expectTypeOf<RunEvents>().not.toHaveProperty('onLlmCall')
+    })
+
+    it('onBeforeStep framework callback in events is still called; ctx.events is absent', async () => {
+      // arrange
+      const onBeforeStep = vi.fn()
+      let capturedCtx: Record<string, unknown> | null = null
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                capturedCtx = ctx as Record<string, unknown>
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      await agent.run({}, { events: { onBeforeStep } })
+
+      // assert
+      expect(onBeforeStep).toHaveBeenCalledOnce()
+      expect(onBeforeStep).toHaveBeenCalledWith('go', expect.any(Object))
+      expect('events' in capturedCtx!).toBe(false)
+    })
+  })
+
+  describe('Group: Same-process resume — listeners are preserved', () => {
+    it('ctx.emit in resumed step calls the same listener from the original run', async () => {
+      // arrange
+      const fn = vi.fn()
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('step1', {
+              run: async (_s, ctx) => {
+                await ctx.interrupt('prompt?')
+                return {}
+              },
+            })
+            .next('step2')
+            .step('step2', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('e', 'from-resume')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const run1 = agent.run({}, { listeners: { 'e': fn } })
+      const outcome1 = await run1
+      const run2 = run1.resume('user-response', '$auto:0')
+      await run2
+
+      // assert
+      expect(outcome1.signal).toBe('$interrupt')
+      expect(fn).toHaveBeenCalledOnce()
+      expect(fn).toHaveBeenCalledWith('from-resume')
+    })
+  })
+
+  describe('Group: Cross-process resume — listeners are not available', () => {
+    it('ctx.emit in a cross-process resumed step is a no-op — no listener is called', async () => {
+      // arrange
+      const fn = vi.fn()
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          sessionId: 'sess-1',
+          runId: 'run-1',
+          phase: 'paused',
+          startedAt: new Date().toISOString(),
+          settledAt: new Date().toISOString(),
+          initialState: {},
+          finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: 'prompt?' },
+            $interruptResponses: {},
+            $cursor: 'step2',
+          },
+          step: 'step2',
+          signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()()
+        .store({ session: store })
+        .loop(l => {
+          l.start()
+            .step('step1', { run: async () => ({}), route: () => 'done' })
+            .on('done').to('step2')
+            .step('step2', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('e', 'cross-process')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const resumeRun = agent.resume('user-response', 'sess-1', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(fn).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Group: Isolation — no listener leakage between runs', () => {
+    it('two concurrent runs with different listeners dispatch only to their own listeners', async () => {
+      // arrange
+      const fnA = vi.fn()
+      const fnB = vi.fn()
+      let unblockA!: () => void
+      let unblockB!: () => void
+      const blockerA = new Promise<void>(r => { unblockA = r })
+      const blockerB = new Promise<void>(r => { unblockB = r })
+      const h = createHarness<{ blocker: Promise<void> }>()()
+        .provide('blocker', runtime())
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                await (ctx as Record<string, unknown>)['blocker'] as Promise<void>
+                ;ctx.emit('e', ctx.sessionId)
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      const runA = agent.run({}, {
+        blocker: blockerA,
+        sessionId: 'sess-A',
+        listeners: { 'e': fnA },
+      })
+      const runB = agent.run({}, {
+        blocker: blockerB,
+        sessionId: 'sess-B',
+        listeners: { 'e': fnB },
+      })
+      unblockA()
+      unblockB()
+      await Promise.all([runA, runB])
+
+      // assert
+      expect(fnA).toHaveBeenCalledOnce()
+      expect(fnA).toHaveBeenCalledWith('sess-A')
+      expect(fnB).toHaveBeenCalledOnce()
+      expect(fnB).toHaveBeenCalledWith('sess-B')
+    })
+
+    it('second sequential run uses its own listeners — first run listeners do not fire', async () => {
+      // arrange
+      const fnA = vi.fn()
+      const fnB = vi.fn()
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start()
+            .step('go', {
+              run: async (_s, ctx) => {
+                ;ctx.emit('e', 'payload')
+                return {}
+              },
+              route: () => 'done',
+            })
+            .on('done').end()
+        })
+      const agent = createAgent(h, {})
+
+      // act
+      await agent.run({}, { listeners: { 'e': fnA } })
+      await agent.run({}, { listeners: { 'e': fnB } })
+
+      // assert
+      expect(fnA).toHaveBeenCalledTimes(1)
+      expect(fnB).toHaveBeenCalledTimes(1)
     })
   })
 })

@@ -35,6 +35,8 @@ export interface SessionRunOptions {
   readonly onComplete?: (state: Record<string, unknown>, signal: string) => void
   /** Called when ctx.interrupt() pauses the run (isInterruptPause is true). */
   readonly onInterrupt?: (prompt: unknown, interruptId: string) => void
+  /** Listeners for user-emitted events (ctx.emit). Keyed by event name. */
+  readonly listeners?: Record<string, (payload: unknown) => void>
 }
 
 // -----------------------------------------------------------------------

@@ -15,6 +15,7 @@ import { NoInterruptError, injectInterruptResponse } from './interrupt-resume.js
 import { SessionInFlightError, SessionPendingInterruptError } from './concurrency-errors.js'
 import { randomUUID } from 'node:crypto'
 import { extractRunEvents } from './event-callbacks.js'
+import { extractRunListeners } from './ctx-emit.js'
 
 // -----------------------------------------------------------------------
 // Agent — the minimal public object returned by createAgent
@@ -224,7 +225,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   }
 
   // Reserved keys are skipped during agent.run() resource validation
-  const reservedRunKeys = new Set(['sessionId', 'signal', 'events'])
+  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners'])
 
   // one per agent instance; tracks all session IDs currently executing
   const inFlightSessions = new Set<string>()
@@ -254,8 +255,6 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           ...Object.fromEntries(agentInternals.resolvedProviders),
           sessionId: sId,
         }
-        // cross-process resume: ctx.events is empty (no events from the original run are available)
-        ;(agentCtx as Record<string, unknown>)['events'] = {} // as: Record<string, unknown> allows adding framework-injected fields to ctx
         const r = await runWithSession(
           capturedStore,
           sId,
@@ -334,6 +333,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       // Assemble ctx: resolvedProviders merged with runtime slots and sessionId
       const runtimeSlots: Record<string, unknown> = {}
       for (const key of agentInternals.runtimeKeys) {
+        if (reservedRunKeys.has(key)) continue // reserved keys are consumed by framework, not injected into ctx
         runtimeSlots[key] = resources[key]
       }
       const ctx: Record<string, unknown> & { readonly sessionId: string } = {
@@ -342,16 +342,9 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         sessionId,
       }
 
-      // Extract event callbacks from resources (reserved key)
+      // Extract event callbacks and listeners from resources (reserved keys)
       const events = extractRunEvents(resources)
-
-      // Inject LLM/tool callbacks into ctx so steps and adapters can fire them
-      ;(ctx as Record<string, unknown>)['events'] = { // as: Record<string, unknown> allows adding framework-injected fields to ctx without widening the user-defined Ctx type parameter
-        onLlmCall: events.onLlmCall,
-        onLlmResponse: events.onLlmResponse,
-        onToolCall: events.onToolCall,
-        onToolResult: events.onToolResult,
-      }
+      const listeners = extractRunListeners(resources)
 
       const options: SessionRunOptions = {
         shouldStop: () => stopFlag.stopped,
@@ -365,6 +358,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...(events.onError !== undefined ? { onError: events.onError } : {}),
         ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
         ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
+        ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -428,6 +422,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                     ...(events.onError !== undefined ? { onError: events.onError } : {}),
                     ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
                     ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
+                    ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
                   },
                 )
                 if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -459,6 +454,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                   ...(events.onError !== undefined ? { onError: events.onError } : {}),
                   ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
                   ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
+                  ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
                 },
               )
               if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)

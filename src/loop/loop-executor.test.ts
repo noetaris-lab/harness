@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { runLoop, UnknownSignalError, NoNextStepError } from './loop-executor.js'
 import { createLoopBuilder, extractLoopDefinition } from './loop-dsl.js'
 import type { LoopDefinition } from './loop-dsl.js'
+// ctx-emit injection tests use the same build helper defined below
 
 // File-level build helper: constructs a LoopDefinition from a builder lambda
 function build(
@@ -1517,6 +1518,170 @@ describe('runLoop', () => {
       expect(result.paused).toBe(false)
       expect(result.cursor).toBeNull()
       expect(result.state.$error).toBe(thrownError)
+    })
+
+  })
+
+  describe('ctx.emit injection', () => {
+
+    it("step's ctx.emit calls the registered listener", async () => {
+      // arrange
+      const fn = vi.fn()
+      const graph = build(l => l.start()
+        .step('go', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('x', 'value'); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+      const callbacks = { listeners: { 'x': fn } }
+
+      // act
+      await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(fn).toHaveBeenCalledOnce()
+      expect(fn).toHaveBeenCalledWith('value')
+    })
+
+    it('unregistered name is a no-op and execution continues normally', async () => {
+      // arrange
+      const fn = vi.fn()
+      const graph = build(l => l.start()
+        .step('go', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('y', 'other'); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+      const callbacks = { listeners: { 'x': fn } }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(fn).not.toHaveBeenCalled()
+      expect(result.signal).toBe('done')
+    })
+
+    it('ctx.emit is a no-op when no callbacks argument is provided', async () => {
+      // arrange
+      const graph = build(l => l.start()
+        .step('go', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('x', 'payload'); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, undefined, undefined, undefined)
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it('ctx.emit is a no-op when callbacks has no listeners key', async () => {
+      // arrange
+      const graph = build(l => l.start()
+        .step('go', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('x', 'payload'); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+      const callbacks = {}
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it('listener is called twice when two steps both emit the same event name', async () => {
+      // arrange
+      const fn = vi.fn()
+      const graph = build(l => l.start()
+        .step('stepA', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('e', 1); return {} },
+        })
+        .next('stepB')
+        .step('stepB', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('e', 2); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+      const callbacks = { listeners: { 'e': fn } }
+
+      // act
+      await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(fn).toHaveBeenCalledTimes(2)
+      expect(fn).toHaveBeenNthCalledWith(1, 1)
+      expect(fn).toHaveBeenNthCalledWith(2, 2)
+    })
+
+    it('ctx.emit is available in the first step (injection precedes the while loop)', async () => {
+      // arrange
+      const fn = vi.fn()
+      const graph = build(l => l.start()
+        .step('first', {
+          run: async (_s, ctx) => { (ctx as Record<string, unknown> & { sessionId: string; emit: (name: string, payload?: unknown) => void }).emit('ready', true); return {} },
+          route: () => 'done',
+        })
+        .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const ctx = { sessionId: 'test' }
+      const callbacks = { listeners: { 'ready': fn } }
+
+      // act
+      await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(fn).toHaveBeenCalledOnce()
+      expect(fn).toHaveBeenCalledWith(true)
+    })
+
+    it('ctx.interrupt and ctx.emit are both available in the first step', async () => {
+      // arrange
+      const emitFn = vi.fn()
+      const state: Record<string, unknown> = { $interruptResponses: { '$auto:0': 'response' } }
+      const graph = build(l => l.start()
+        .step('go', {
+          run: async (_s, ctx) => {
+            const typedCtx = ctx as Record<string, unknown> & { sessionId: string; interrupt: (prompt: unknown, id?: string) => Promise<unknown>; emit: (name: string, payload?: unknown) => void }
+            const answer = await typedCtx.interrupt('prompt?')
+            typedCtx.emit('done', answer)
+            return {}
+          },
+          route: () => 'end',
+        })
+        .on('end').end()
+      )
+      const ctx = { sessionId: 'test' }
+      const callbacks = { listeners: { 'done': emitFn } }
+
+      // act
+      const result = await runLoop(graph, state, ctx, undefined, undefined, undefined, callbacks)
+
+      // assert
+      expect(result.signal).toBe('end')
+      expect(emitFn).toHaveBeenCalledOnce()
+      expect(emitFn).toHaveBeenCalledWith('response')
     })
 
   })

@@ -29,6 +29,7 @@ export type RunFn<S, Ctx> = (
   ctx: Ctx & {
     readonly sessionId: string
     readonly interrupt: (prompt: unknown, id?: string) => Promise<unknown>
+    readonly emit: (name: string, payload?: unknown) => void
   },
 ) => Promise<Partial<Omit<S, '$error' | '$interrupt'>>> | Partial<Omit<S, '$error' | '$interrupt'>>
 

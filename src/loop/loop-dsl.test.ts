@@ -400,5 +400,29 @@ describe('LoopDSL', () => {
 
       expectTypeOf(opts).toHaveProperty('route').toEqualTypeOf<ErrorAwareRouteFn<State> | undefined>()
     })
+
+    it('RunFn ctx.emit resolves as (name: string, payload?: unknown) => void without a type error', () => {
+      // arrange
+      type TestCtx = { sessionId: string }
+      type TestState = object
+      type EmitType = Parameters<RunFn<TestState, TestCtx>>[1]['emit']
+
+      // act + assert
+      expectTypeOf<EmitType>().toEqualTypeOf<(name: string, payload?: unknown) => void>()
+    })
+
+    it('existing step function without ctx.emit usage compiles without error', () => {
+      // arrange
+      type TestCtx = { sessionId: string }
+      type TestState = { count: number }
+      const step: RunFn<TestState, TestCtx> = async (state, ctx) => {
+        void ctx.sessionId
+        void state.count
+        return {}
+      }
+
+      // act + assert
+      expectTypeOf(step).toMatchTypeOf<RunFn<TestState, TestCtx>>()
+    })
   })
 })
