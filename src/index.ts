@@ -18,3 +18,10 @@ export {
 export { type SessionStore, type StoredRun } from './agent/session-store.js'
 export { NoInterruptError } from './agent/interrupt-resume.js'
 export { SessionInFlightError, SessionPendingInterruptError, StoreLoadError } from './agent/concurrency-errors.js'
+export {
+  composeObservers,
+  type RunContext,
+  type StepContext,
+  type Observer,
+  type ObserverAware,
+} from './agent/observer.js'
