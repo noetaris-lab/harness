@@ -6,9 +6,9 @@ import type { LoopDefinition } from './loop-dsl.js'
 
 // File-level build helper: constructs a LoopDefinition from a builder lambda
 function build(
-  fn: (l: ReturnType<typeof createLoopBuilder<Record<string, unknown>, Record<string, unknown> & { sessionId: string }>>) => void
+  fn: (l: ReturnType<typeof createLoopBuilder<Record<string, unknown>, Record<string, unknown> & { agentId: string; sessionId: string }>>) => void
 ): LoopDefinition {
-  const builder = createLoopBuilder<Record<string, unknown>, Record<string, unknown> & { sessionId: string }>()
+  const builder = createLoopBuilder<Record<string, unknown>, Record<string, unknown> & { agentId: string; sessionId: string }>()
   fn(builder)
   return extractLoopDefinition(builder as Parameters<typeof extractLoopDefinition>[0])
 }
@@ -26,7 +26,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { count: 0 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -51,7 +51,7 @@ describe('runLoop', () => {
         $error: priorError,
         $interrupt: { interruptId: 'i1', prompt: 'confirm?' },
       }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -74,7 +74,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
       const shouldStop = vi.fn().mockReturnValue(true)
 
       // act
@@ -99,7 +99,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
       const shouldStop = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
 
       // act
@@ -123,7 +123,7 @@ describe('runLoop', () => {
          .on('finish').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -154,7 +154,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { count: 0 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -173,7 +173,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { name: 'original', value: 42 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -193,7 +193,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -212,7 +212,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -230,7 +230,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { messages: ['x'] }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
       const schema = {
         messages: { reduce: (a: string[], b: string[]) => [...a, ...b] },
       } as unknown as Record<string, import('../harness/state-field.js').FieldDefinition<any>>
@@ -251,7 +251,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { name: 'old' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
       const schema = { name: {} } as unknown as Record<string, import('../harness/state-field.js').FieldDefinition<any>>
 
       // act
@@ -270,7 +270,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { key: 'old' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -287,7 +287,7 @@ describe('runLoop', () => {
          .on('exit').end()
       )
       const state: Record<string, unknown> = { x: 'original' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -315,7 +315,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { flag: false }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -337,7 +337,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -357,7 +357,7 @@ describe('runLoop', () => {
          .on('finished').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -388,7 +388,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow(UnknownSignalError)
@@ -413,7 +413,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toMatchObject({ step: 'suspect', signal: 'mystery' })
@@ -434,7 +434,7 @@ describe('runLoop', () => {
          .step('target', { run: runTarget, route: () => 'done' }).on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -457,7 +457,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -487,7 +487,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toThrow(NoNextStepError)
@@ -512,7 +512,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act / assert
       await expect(runLoop(graph, state, ctx, undefined)).rejects.toMatchObject({ step: 'terminal' })
@@ -531,7 +531,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -556,7 +556,7 @@ describe('runLoop', () => {
          .on('end').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -583,7 +583,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -607,7 +607,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { flag: true, marker: 'untouched' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -631,7 +631,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -653,7 +653,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session', model: { invoke: vi.fn() } }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session', model: { invoke: vi.fn() } }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -675,7 +675,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'abc-123' }
+      const ctx = { agentId: 'test-agent', sessionId: 'abc-123' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -696,7 +696,7 @@ describe('runLoop', () => {
          .on('complete').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -716,7 +716,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
       const shouldStop = vi.fn().mockReturnValue(true)
 
       // act
@@ -774,7 +774,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { existing: 'value' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -807,7 +807,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = { count: 0 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -839,7 +839,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = { value: 'original' }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -867,7 +867,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -888,7 +888,7 @@ describe('runLoop', () => {
       const graph = build(l =>
         l.start()
          .step('interruptible', {
-           run: async (_s: Record<string, unknown>, ctx: Record<string, unknown> & { sessionId: string }) => {
+           run: async (_s: Record<string, unknown>, ctx: Record<string, unknown> & { agentId: string; sessionId: string }) => {
              await (ctx as any /* any: interrupt is dynamically injected by runLoop, not in the static ctx type */).interrupt('confirm?', 'i1')
              return {}
            },
@@ -897,7 +897,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -927,7 +927,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { $error: new Error('prior failure') }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -953,7 +953,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = { $error: new Error('lingering error') }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -985,7 +985,7 @@ describe('runLoop', () => {
          .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1013,7 +1013,7 @@ describe('runLoop', () => {
          .on('continue').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1043,7 +1043,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1074,7 +1074,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const err = await runLoop(graph, state, ctx, undefined).catch(e => e)
@@ -1104,7 +1104,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1135,7 +1135,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = { count: 5 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1170,7 +1170,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1209,7 +1209,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1237,7 +1237,7 @@ describe('runLoop', () => {
       }
       const shouldStop = vi.fn().mockReturnValue(false)
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined, shouldStop)
@@ -1261,7 +1261,7 @@ describe('runLoop', () => {
       )
       const shouldStop = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined, shouldStop)
@@ -1297,7 +1297,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = { count: 0 }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1334,7 +1334,7 @@ describe('runLoop', () => {
         }],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1374,7 +1374,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1404,7 +1404,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1441,7 +1441,7 @@ describe('runLoop', () => {
       const state: Record<string, unknown> = {
         $interruptResponses: { 'i1': 'user response' },
       }
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1479,7 +1479,7 @@ describe('runLoop', () => {
         ],
       }
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1508,7 +1508,7 @@ describe('runLoop', () => {
          .on('normal').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test-session' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test-session' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -1535,7 +1535,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = { listeners: { 'x': fn } }
 
       // act
@@ -1557,7 +1557,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = { listeners: { 'x': fn } }
 
       // act
@@ -1578,7 +1578,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined, undefined, undefined, undefined)
@@ -1597,7 +1597,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = {}
 
       // act
@@ -1622,7 +1622,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = { listeners: { 'e': fn } }
 
       // act
@@ -1645,7 +1645,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = { listeners: { 'ready': fn } }
 
       // act
@@ -1672,7 +1672,7 @@ describe('runLoop', () => {
         })
         .on('end').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
       const callbacks = { listeners: { 'done': emitFn } }
 
       // act

@@ -10,10 +10,10 @@ type SchemaLike = Record<string, {
 // -----------------------------------------------------------------------
 
 export interface SessionStore {
-  load(sessionId: string): Promise<StoredRun | null>
-  save(sessionId: string, run: StoredRun): Promise<void>
-  loadHistory?(sessionId: string): Promise<StoredRun[]>
-  branch?(sessionId: string, runId: string): Promise<string>
+  load(agentId: string, sessionId: string): Promise<StoredRun | null>
+  save(agentId: string, sessionId: string, run: StoredRun): Promise<void>
+  loadHistory?(agentId: string, sessionId: string): Promise<StoredRun[]>
+  branch?(agentId: string, sessionId: string, runId: string): Promise<string>
 }
 
 // -----------------------------------------------------------------------
@@ -21,6 +21,7 @@ export interface SessionStore {
 // -----------------------------------------------------------------------
 
 export interface StoredRun {
+  readonly agentId: string
   readonly runId: string
   readonly sessionId: string
   readonly startedAt: string

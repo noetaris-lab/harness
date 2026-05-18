@@ -48,8 +48,8 @@ describe('createAgent', () => {
       // do NOT call h.loop()
 
       // act & assert
-      expect(() => createAgent(h, {})).toThrow(MissingLoopError)
-      expect(() => createAgent(h, {})).toThrow('h.loop()')
+      expect(() => createAgent('test-agent', h,{})).toThrow(MissingLoopError)
+      expect(() => createAgent('test-agent', h,{})).toThrow('h.loop()')
     })
 
     it('propagates HarnessInternalsError when h is not a real Harness', () => {
@@ -57,7 +57,7 @@ describe('createAgent', () => {
       const fakeHarness = {}
 
       // act & assert
-      expect(() => createAgent(fakeHarness as any, {})).toThrow(HarnessInternalsError) // any: intentionally not a real Harness for error-case testing
+      expect(() => createAgent('test-agent', fakeHarness as any, {})).toThrow(HarnessInternalsError) // any: intentionally not a real Harness for error-case testing
     })
   })
 
@@ -69,9 +69,9 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { prompts: 'x', ghost: 'y' } as any)).toThrow(UnknownSlotError) // any: extra key 'ghost' is intentionally invalid — TypeScript enforces Pick<Ctx, Req> at compile time
+      expect(() => createAgent('test-agent', h,{ prompts: 'x', ghost: 'y' } as any)).toThrow(UnknownSlotError) // any: extra key 'ghost' is intentionally invalid — TypeScript enforces Pick<Ctx, Req> at compile time
       try {
-        createAgent(h, { prompts: 'x', ghost: 'y' } as any) // any: same as above
+        createAgent('test-agent', h,{ prompts: 'x', ghost: 'y' } as any) // any: same as above
       } catch (error) {
         expect((error as UnknownSlotError).key).toBe('ghost') // as: catch clause — error class verified by preceding toThrow assertion
         expect((error as UnknownSlotError).message).toContain('ghost') // as: same as above
@@ -83,9 +83,9 @@ describe('createAgent', () => {
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { anything: 'v' } as any)).toThrow(UnknownSlotError) // any: unknown key is intentionally invalid for error-case testing
+      expect(() => createAgent('test-agent', h,{ anything: 'v' } as any)).toThrow(UnknownSlotError) // any: unknown key is intentionally invalid for error-case testing
       try {
-        createAgent(h, { anything: 'v' } as any) // any: same as above
+        createAgent('test-agent', h,{ anything: 'v' } as any) // any: same as above
       } catch (error) {
         expect((error as UnknownSlotError).key).toBe('anything') // as: catch clause — error class verified by preceding toThrow assertion
       }
@@ -98,10 +98,10 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { model: {} })).toThrow(RuntimeSlotInAgentError)
-      expect(() => createAgent(h, { model: {} })).not.toThrow(UnknownSlotError)
+      expect(() => createAgent('test-agent', h,{ model: {} })).toThrow(RuntimeSlotInAgentError)
+      expect(() => createAgent('test-agent', h,{ model: {} })).not.toThrow(UnknownSlotError)
       try {
-        createAgent(h, { model: {} })
+        createAgent('test-agent', h,{ model: {} })
       } catch (error) {
         expect((error as RuntimeSlotInAgentError).key).toBe('model') // as: catch clause — error class verified by preceding toThrow assertion
       }
@@ -115,9 +115,9 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { model: {}, prompts: 'sys' } as any)).toThrow(RuntimeSlotInAgentError) // any: runtime() key in slots is intentionally invalid — Pick<Ctx, Req> excludes runtime slots
+      expect(() => createAgent('test-agent', h,{ model: {}, prompts: 'sys' } as any)).toThrow(RuntimeSlotInAgentError) // any: runtime() key in slots is intentionally invalid — Pick<Ctx, Req> excludes runtime slots
       try {
-        createAgent(h, { model: {}, prompts: 'sys' } as any) // any: same as above
+        createAgent('test-agent', h,{ model: {}, prompts: 'sys' } as any) // any: same as above
       } catch (error) {
         expect((error as RuntimeSlotInAgentError).key).toBe('model') // as: catch clause — error class verified by preceding toThrow assertion
         expect((error as RuntimeSlotInAgentError).message).toContain('model') // as: same as above
@@ -133,9 +133,9 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { model: {} } as any)).toThrow(RuntimeSlotInAgentError) // any: runtime() key in slots is intentionally invalid
+      expect(() => createAgent('test-agent', h,{ model: {} } as any)).toThrow(RuntimeSlotInAgentError) // any: runtime() key in slots is intentionally invalid
       try {
-        createAgent(h, { model: {} } as any) // any: same as above
+        createAgent('test-agent', h,{ model: {} } as any) // any: same as above
       } catch (error) {
         expect((error as RuntimeSlotInAgentError).key).toBe('model') // as: catch clause — error class verified by preceding toThrow assertion
       }
@@ -148,9 +148,9 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, {} as any)).toThrow(MissingSlotError) // any: missing required slot is intentionally invalid for error-case testing
+      expect(() => createAgent('test-agent', h,{} as any)).toThrow(MissingSlotError) // any: missing required slot is intentionally invalid for error-case testing
       try {
-        createAgent(h, {} as any) // any: same as above
+        createAgent('test-agent', h,{} as any) // any: same as above
       } catch (error) {
         expect((error as MissingSlotError).key).toBe('prompts') // as: catch clause — error class verified by preceding toThrow assertion
         expect((error as MissingSlotError).message).toContain('prompts') // as: same as above
@@ -165,9 +165,9 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { prompts: 'sys' } as any)).toThrow(MissingSlotError) // any: missing required slot is intentionally invalid for error-case testing
+      expect(() => createAgent('test-agent', h,{ prompts: 'sys' } as any)).toThrow(MissingSlotError) // any: missing required slot is intentionally invalid for error-case testing
       try {
-        createAgent(h, { prompts: 'sys' } as any) // any: same as above
+        createAgent('test-agent', h,{ prompts: 'sys' } as any) // any: same as above
       } catch (error) {
         expect((error as MissingSlotError).key).toBe('apiKey') // as: catch clause — error class verified by preceding toThrow assertion
       }
@@ -182,8 +182,8 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, { prompts: 'system prompt text' })).not.toThrow()
-      const agent = createAgent(h, { prompts: 'system prompt text' })
+      expect(() => createAgent('test-agent', h,{ prompts: 'system prompt text' })).not.toThrow()
+      const agent = createAgent('test-agent', h,{ prompts: 'system prompt text' })
       expect(agent).toBeDefined()
       expect(typeof agent.run).toBe('function')
       expect(typeof agent.resume).toBe('function')
@@ -198,8 +198,8 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, {})).not.toThrow()
-      const agent = createAgent(h, {})
+      expect(() => createAgent('test-agent', h,{})).not.toThrow()
+      const agent = createAgent('test-agent', h,{})
       expect(agent).toBeDefined()
     })
 
@@ -210,8 +210,8 @@ describe('createAgent', () => {
         .loop(buildValidLoop)
 
       // act & assert
-      expect(() => createAgent(h, {})).not.toThrow()
-      const agent = createAgent(h, {})
+      expect(() => createAgent('test-agent', h,{})).not.toThrow()
+      const agent = createAgent('test-agent', h,{})
       expect(agent).toBeDefined()
     })
   })
@@ -220,7 +220,7 @@ describe('createAgent', () => {
     it('agent.resume() returns a RunHandle whose execution rejects with NoInterruptError when no store is configured', async () => {
       // arrange
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const run = agent.resume(undefined, 'session-1', 'interrupt-1')
@@ -235,7 +235,7 @@ describe('createAgent', () => {
     it('agent.status() resolves with { phase: "fresh" } when no session store is configured', async () => {
       // arrange
       const h = createHarness<Record<string, never>>()({}).loop(buildValidLoop)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const status = await agent.status('session-1')
@@ -251,7 +251,7 @@ describe('createAgent', () => {
       const schema = { count: field({ default: () => 0 }) }
       const h = createHarness<Record<string, never>>()(schema).loop(buildValidLoop)
       const expectedLoopDef = getInternals(h).loopDef
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const internals = getAgentInternals(agent)
@@ -269,7 +269,7 @@ describe('createAgent', () => {
       const h = createHarness<{ tools: typeof myTool }>()({})
         .provide('tools', myTool)
         .loop(buildValidLoop)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const internals = getAgentInternals(agent)
@@ -283,7 +283,7 @@ describe('createAgent', () => {
       const h = createHarness<{ prompts: string }>()({})
         .provide('prompts', required())
         .loop(buildValidLoop)
-      const agent = createAgent(h, { prompts: 'sys' })
+      const agent = createAgent('test-agent', h,{ prompts: 'sys' })
 
       // act
       const internals = getAgentInternals(agent)
@@ -298,7 +298,7 @@ describe('createAgent', () => {
         .provide('model', { v: 1 })
         .provide('model', { v: 2 })
         .loop(buildValidLoop)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const internals = getAgentInternals(agent)
@@ -314,7 +314,7 @@ describe('createAgent', () => {
       const h = createHarness<Record<string, never>>()({})
         .store({ session: myStore, knowledge: myGraph })
         .loop(buildValidLoop)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const internals = getAgentInternals(agent)
@@ -422,7 +422,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4' })
@@ -450,7 +450,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', sessionId: 'my-session-123' })
@@ -469,7 +469,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4' })
@@ -488,7 +488,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', sessionId: 42 })
@@ -508,7 +508,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4' })
@@ -528,7 +528,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run1 = agent.run({}, { model: 'gpt-4', sessionId: 'sess-a' })
@@ -550,12 +550,12 @@ describe('createAgent', () => {
           .loop(l => {
             l.start()
               .step('run', {
-                run: async (s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
+                run: async (_s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
                 route: () => 'done',
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         await agent.run({}, { model: 'gpt-4' })
@@ -573,7 +573,7 @@ describe('createAgent', () => {
           .loop(l => {
             l.start()
               .step('run', {
-                run: async (s, ctx) => {
+                run: async (_s, ctx) => {
                   capturedCtxSessionId = ctx.sessionId
                   return {}
                 },
@@ -581,7 +581,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', sessionId: 'ctx-test-session' })
@@ -602,12 +602,12 @@ describe('createAgent', () => {
           .loop(l => {
             l.start()
               .step('run', {
-                run: async (s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
+                run: async (_s, ctx) => { capturedCtx = ctx as Record<string, unknown>; return {} },
                 route: () => 'done',
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         await agent.run({}, { model: 'gpt-4' })
@@ -636,7 +636,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
@@ -663,7 +663,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
@@ -683,7 +683,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', signal: 'abort' })
@@ -704,7 +704,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4' })
@@ -727,7 +727,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, {
@@ -761,7 +761,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         run = agent.run({}, { model: 'gpt-4' })
@@ -783,7 +783,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4' })
@@ -806,7 +806,7 @@ describe('createAgent', () => {
             .step('run', { run: async () => ({}), route: () => 'done' })
             .on('done').end()
         })
-      const agent = createAgent(h, { prompts: 'You are a helpful assistant.' })
+      const agent = createAgent('test-agent', h,{ prompts: 'You are a helpful assistant.' })
 
       it('throws UnknownRunSlotError when resources contains a key not declared in harness', () => {
         // arrange — shared harness above
@@ -884,7 +884,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { sessionId: 'reserved-only' })
@@ -904,7 +904,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const act = () => agent.run({}, {})
@@ -926,7 +926,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run = agent.run({}, { model: 'gpt-4', signal: ac.signal })
@@ -947,7 +947,7 @@ describe('createAgent', () => {
               .step('run', { run: async () => ({}), route: () => 'done' })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run1 = agent.run({}, { model: 'gpt-4' })
@@ -981,7 +981,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         const run1 = agent.run({}, { model: 'gpt-4' })
@@ -1005,7 +1005,7 @@ describe('createAgent', () => {
           .loop(l => {
             l.start()
               .step('run', {
-                run: async (s, ctx) => {
+                run: async (_s, ctx) => {
                   ctxRefs.push(ctx as Record<string, unknown>)
                   return {}
                 },
@@ -1013,7 +1013,7 @@ describe('createAgent', () => {
               })
               .on('done').end()
           })
-        const agent = createAgent(h, {})
+        const agent = createAgent('test-agent', h,{})
 
         // act
         await agent.run({}, { model: 'gpt-4' })
@@ -1056,7 +1056,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
       const fn = vi.fn()
 
       // act
@@ -1081,7 +1081,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
       const fn = vi.fn()
 
       // act
@@ -1107,7 +1107,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const result = await agent.run({}, { model: 'gpt-4' })
@@ -1125,7 +1125,7 @@ describe('createAgent', () => {
             .step('go', { run: async () => ({}), route: () => 'done' })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
       const fn = vi.fn()
 
       // act
@@ -1152,7 +1152,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       await agent.run({}, { listeners: { 'llm:call': fn } })
@@ -1177,7 +1177,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const result = await agent.run({}, { listeners: { 'llm:call': fn } })
@@ -1201,7 +1201,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const result = await agent.run({}, {})
@@ -1224,7 +1224,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const result = await agent.run({}, { listeners: {} })
@@ -1255,7 +1255,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       await agent.run({}, { listeners: { 'e': fn } })
@@ -1283,7 +1283,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       await agent.run({}, { events: { onBeforeStep: () => {} } })
@@ -1313,7 +1313,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       await agent.run({}, { events: { onBeforeStep } })
@@ -1348,7 +1348,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const run1 = agent.run({}, { listeners: { 'e': fn } })
@@ -1369,6 +1369,7 @@ describe('createAgent', () => {
       const fn = vi.fn()
       const store = makeStubStore({
         load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
           sessionId: 'sess-1',
           runId: 'run-1',
           phase: 'paused',
@@ -1400,7 +1401,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const resumeRun = agent.resume('user-response', 'sess-1', '$auto:0')
@@ -1434,7 +1435,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       const runA = agent.run({}, {
@@ -1474,7 +1475,7 @@ describe('createAgent', () => {
             })
             .on('done').end()
         })
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h,{})
 
       // act
       await agent.run({}, { listeners: { 'e': fnA } })

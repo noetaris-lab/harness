@@ -27,6 +27,7 @@ export type StepState<S> = S & FrameworkState
 export type RunFn<S, Ctx> = (
   state: StepState<S>,
   ctx: Ctx & {
+    readonly agentId: string
     readonly sessionId: string
     readonly interrupt: (prompt: unknown, id?: string) => Promise<unknown>
     readonly emit: (name: string, payload?: unknown) => void

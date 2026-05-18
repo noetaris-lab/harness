@@ -22,6 +22,9 @@ import { extractRunListeners } from './ctx-emit.js'
 // -----------------------------------------------------------------------
 
 export interface Agent {
+  /** The agent's unique identifier, as provided to createAgent(). */
+  readonly id: string
+
   /**
    * Start a new run. Returns a RunHandle synchronously before execution begins.
    */
@@ -44,6 +47,7 @@ export interface Agent {
 // -----------------------------------------------------------------------
 
 export interface AgentInternals {
+  readonly agentId: string
   readonly resolvedProviders: ReadonlyMap<string, unknown>
   readonly storeEntries: readonly ProviderEntry[]
   readonly loopDef: LoopDefinition
@@ -60,7 +64,7 @@ export interface AgentInternals {
 
 export class MissingLoopError extends Error {
   constructor() {
-    super('harness has no loop — call h.loop() before createAgent()')
+    super('harness has no loop — call h.loop() before createAgent(id, h, slots)')
     this.name = 'MissingLoopError'
   }
 }
@@ -144,6 +148,7 @@ type AgentWithInternals = Agent & {
 // -----------------------------------------------------------------------
 
 export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof Ctx>(
+  id: string,
   h: Harness<Ctx, State, Req, Run>,
   slots: Pick<Ctx, Req>,
 ): Agent {
@@ -216,6 +221,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
 
   // Construct AgentInternals
   const agentInternals: AgentInternals = {
+    agentId: id,
     resolvedProviders,
     storeEntries,
     loopDef: internals.loopDef, // Guaranteed to be non-undefined by validation 1
@@ -251,13 +257,15 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       await Promise.resolve()
       try {
         if (capturedStore === undefined) throw new NoInterruptError()
-        await injectInterruptResponse(capturedStore, sId, iId, resp)
-        const agentCtx: Record<string, unknown> & { readonly sessionId: string } = {
+        await injectInterruptResponse(capturedStore, id, sId, iId, resp)
+        const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
           ...Object.fromEntries(agentInternals.resolvedProviders),
+          agentId: id,
           sessionId: sId,
         }
         const r = await runWithSession(
           capturedStore,
+          id,
           sId,
           rId,
           agentInternals.loopDef,
@@ -288,6 +296,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
 
   // Create and return Agent with attached internals
   const agent: AgentWithInternals = {
+    id,
     run: (initialState: Record<string, unknown>, resources: Record<string, unknown>): RunHandle => {
       // Validation pass 1: unknown keys (not reserved, not runtime, not required)
       for (const key of Object.keys(resources)) {
@@ -341,9 +350,10 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         if (reservedRunKeys.has(key)) continue // reserved keys are consumed by framework, not injected into ctx
         runtimeSlots[key] = resources[key]
       }
-      const ctx: Record<string, unknown> & { readonly sessionId: string } = {
+      const ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
         ...Object.fromEntries(agentInternals.resolvedProviders),
         ...runtimeSlots,
+        agentId: id,
         sessionId,
       }
 
@@ -376,6 +386,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         try {
           const r = await runWithSession(
             capturedStore,
+            id,
             sessionId,
             runId,
             agentInternals.loopDef,
@@ -409,9 +420,10 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
             try {
               if (capturedStore !== undefined) {
                 // Cross-process path: inject response into store, reload, and re-run
-                await injectInterruptResponse(capturedStore, sessionId, interruptId, response)
+                await injectInterruptResponse(capturedStore, id, sessionId, interruptId, response)
                 const r = await runWithSession(
                   capturedStore,
+                  id,
                   sessionId,
                   resumeRunId,
                   agentInternals.loopDef,
@@ -487,7 +499,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       return makeAgentResumeHandle(response, sessionId, interruptId)
     },
 
-    status: (sessionId: string) => querySessionPhase(capturedStore, sessionId),
+    status: (sessionId: string) => querySessionPhase(capturedStore, id, sessionId),
     [_agentInternals]: agentInternals,
   }
 

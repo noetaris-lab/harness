@@ -20,11 +20,12 @@ export class NoInterruptError extends Error {
 
 export async function injectInterruptResponse(
   store: SessionStore,
+  agentId: string,
   sessionId: string,
   interruptId: string,
   response: unknown,
 ): Promise<void> {
-  const loaded = await store.load(sessionId)
+  const loaded = await store.load(agentId, sessionId)
 
   if (loaded === null) throw new NoInterruptError()
   if (loaded.phase !== 'paused') throw new NoInterruptError()
@@ -41,6 +42,7 @@ export async function injectInterruptResponse(
   }
 
   const updated: StoredRun = {
+    agentId: loaded.agentId,
     runId: loaded.runId,
     sessionId: loaded.sessionId,
     startedAt: loaded.startedAt,
@@ -52,5 +54,5 @@ export async function injectInterruptResponse(
     ...(loaded.signal !== undefined ? { signal: loaded.signal } : {}),
   }
 
-  await store.save(sessionId, updated)
+  await store.save(agentId, sessionId, updated)
 }

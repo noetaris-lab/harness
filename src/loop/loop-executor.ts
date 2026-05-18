@@ -90,7 +90,7 @@ export interface LoopCallbacks {
 export async function runLoop(
   graph: LoopDefinition,
   state: Record<string, unknown>,
-  ctx: Record<string, unknown> & { readonly sessionId: string },
+  ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string },
   schema: Record<string, FieldDefinition<any>> | undefined, // any: see applyUpdate comment
   shouldStop?: () => boolean,
   startCursor?: string,

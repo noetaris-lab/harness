@@ -11,6 +11,7 @@ import type { StoredRun } from './session-store.js'
 
 function makeStoredRun(overrides: Partial<StoredRun> & { phase: StoredRun['phase'] }): StoredRun {
   return {
+    agentId: 'a1',
     runId: 'r1',
     sessionId: 's1',
     startedAt: '2026-01-01T00:00:00Z',

@@ -75,13 +75,14 @@ export function resolveSessionStore(
 
 export async function querySessionPhase(
   store: SessionStore | undefined,
+  agentId: string,
   sessionId: string,
 ): Promise<SessionPhase> {
   if (store === undefined) {
     return { phase: 'fresh' }
   }
 
-  const loaded = await store.load(sessionId)
+  const loaded = await store.load(agentId, sessionId)
   return storedSessionToPhase(loaded)
 }
 
@@ -91,12 +92,13 @@ export async function querySessionPhase(
 
 export async function runWithSession(
   store: SessionStore | undefined,
+  agentId: string,
   sessionId: string,
   runId: string,
   graph: LoopDefinition,
   initialStateArg: Record<string, unknown>,
   schema: Record<string, FieldDefinition<any>> | undefined, // any: FieldDefinition uses invariant T; heterogeneous schema maps require any
-  ctx: Record<string, unknown> & { readonly sessionId: string },
+  ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string },
   options?: SessionRunOptions,
 ): Promise<LoopResult> {
   if (store === undefined) {
@@ -108,7 +110,7 @@ export async function runWithSession(
   // Run never begins; 'await run' always resolves (never rejects) per docs/agent.md guarantee
   let loaded: StoredRun | null
   try {
-    loaded = await store.load(sessionId)
+    loaded = await store.load(agentId, sessionId)
   } catch (error: unknown) {
     const storeError = new StoreLoadError(error)
     options?.onStoreError?.(storeError, 'load')
@@ -132,6 +134,7 @@ export async function runWithSession(
   try {
     if (result.paused) {
       const saved: StoredRun = {
+        agentId,
         runId,
         sessionId,
         startedAt,
@@ -142,9 +145,10 @@ export async function runWithSession(
         step: result.cursor!,
         ...(result.signal !== null ? { signal: result.signal } : {}),
       }
-      await store.save(sessionId, saved)
+      await store.save(agentId, sessionId, saved)
     } else {
       const saved: StoredRun = {
+        agentId,
         runId,
         sessionId,
         startedAt,
@@ -154,7 +158,7 @@ export async function runWithSession(
         finalState: result.state,
         ...(result.signal !== null ? { signal: result.signal } : {}),
       }
-      await store.save(sessionId, saved)
+      await store.save(agentId, sessionId, saved)
     }
   } catch (error) {
     options?.onStoreError?.(error, 'persist')

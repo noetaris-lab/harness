@@ -94,7 +94,7 @@ function makeInterruptCapturingStore() {
     load: vi.fn().mockImplementation(() => {
       return Promise.resolve(saved)
     }),
-    save: vi.fn().mockImplementation((_id: string, session: Record<string, unknown>) => {
+    save: vi.fn().mockImplementation((_agentId: string, _id: string, session: Record<string, unknown>) => {
       saved = session
       return Promise.resolve()
     }),
@@ -120,7 +120,7 @@ describe('ConcurrencyGuard', () => {
       const blocker = new Promise<void>(r => { unblock = r })
       const store = makeStubStore()
       const h = makeBlockingLoopWithStore(store, blocker)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -140,7 +140,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeStubStore()
       const h = makeCompletingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -160,7 +160,7 @@ describe('ConcurrencyGuard', () => {
       const blocker = new Promise<void>(r => { unblock = r })
       const store = makeStubStore()
       const h = makeBlockingLoopWithStore(store, blocker)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -188,7 +188,7 @@ describe('ConcurrencyGuard', () => {
       })
       const onStoreError = vi.fn()
       const h = makeCompletingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1', events: { onStoreError } })
@@ -215,7 +215,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -232,7 +232,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -251,7 +251,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -270,7 +270,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeAlwaysInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -289,7 +289,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeAlwaysInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -308,7 +308,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeStubStore()
       const h = makeCompletingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -334,7 +334,7 @@ describe('ConcurrencyGuard', () => {
       const blocker = new Promise<void>(r => { unblock = r })
       const store = makeStubStore()
       const h = makeBlockingLoopWithStore(store, blocker)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -353,7 +353,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       const run1 = agent.run({}, { sessionId: 's1' })
       await run1
@@ -381,7 +381,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       const run1 = agent.run({}, { sessionId: 's1' })
       await run1
@@ -414,7 +414,7 @@ describe('ConcurrencyGuard', () => {
       const store = makeStubStore({ load: vi.fn().mockRejectedValue(loadError) })
       const onStoreError = vi.fn()
       const h = makeCompletingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { sessionId: 's1', events: { onStoreError } })
@@ -437,7 +437,7 @@ describe('ConcurrencyGuard', () => {
       const store = makeStubStore({ load: vi.fn().mockRejectedValue('timeout') })
       const onStoreError = vi.fn()
       const h = makeCompletingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { sessionId: 's1', events: { onStoreError } })
@@ -455,7 +455,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const onStoreError = vi.fn()
       const h = makeCompletingLoop()
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { sessionId: 's1', events: { onStoreError } })
@@ -480,7 +480,7 @@ describe('ConcurrencyGuard', () => {
       const blocker = new Promise<void>(r => { unblock = r })
       const store = makeStubStore()
       const h = makeBlockingLoopWithStore(store, blocker)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })
@@ -504,7 +504,7 @@ describe('ConcurrencyGuard', () => {
       // arrange
       const store = makeInterruptCapturingStore()
       const h = makeInterruptingLoopWithStore(store)
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run1 = agent.run({}, { sessionId: 's1' })

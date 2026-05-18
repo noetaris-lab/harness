@@ -43,7 +43,7 @@ describe('EventCallbacks', () => {
       const onBeforeStep = vi.fn().mockImplementation((_name: string, s: Record<string, unknown>) => { capturedStates.push({ ...s }) })
       const runFn = vi.fn().mockResolvedValue({ count: 99 })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       const initialState = { count: 0 }
 
       // act
@@ -61,7 +61,7 @@ describe('EventCallbacks', () => {
       const onBeforeStep = vi.fn()
       const runWorker = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('check', { route: () => 'go' }).on('go').to('work').step('work', { run: runWorker, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onBeforeStep } })
@@ -86,7 +86,7 @@ describe('EventCallbacks', () => {
       const onAfterStep = vi.fn().mockImplementation((_name: string, s: Record<string, unknown>) => { capturedState.push({ ...s }) })
       const runFn = vi.fn().mockResolvedValue({ result: 'done' })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('compute', { run: runFn, route: () => 'finish' }).on('finish').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onAfterStep } })
@@ -103,7 +103,7 @@ describe('EventCallbacks', () => {
       const onAfterStep = vi.fn()
       const runFn = vi.fn().mockRejectedValue(new Error('step blew up'))
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('boom', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onAfterStep } })
@@ -128,7 +128,7 @@ describe('EventCallbacks', () => {
       const onError = vi.fn()
       const runFn = vi.fn().mockRejectedValue(thrownError)
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('risky', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onError } })
@@ -144,7 +144,7 @@ describe('EventCallbacks', () => {
       const onError = vi.fn()
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { await (ctx['interrupt'] as (p: unknown, id: string) => Promise<unknown>)('confirm?', 'i1'); return {} })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('pause', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onError } })
@@ -161,7 +161,7 @@ describe('EventCallbacks', () => {
       const runBad = vi.fn().mockRejectedValue(new Error('bad'))
       const runRecovery = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('risky', { run: runBad }).step('recovery', { run: runRecovery, route: () => 'done' }).on('done').end().onError('recovery'))
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onError } })
@@ -180,7 +180,7 @@ describe('EventCallbacks', () => {
       // optin: '$error' makes route callable even when run throws (errorAware: true in LoopDefinition)
       const routeFn = vi.fn().mockImplementation((s: Record<string, unknown>) => s.$error ? '$error' : 'done')
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('errorAware', { optin: '$error', run: runFn, route: routeFn }).on('$error').end().on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onError } })
@@ -205,7 +205,7 @@ describe('EventCallbacks', () => {
       const onComplete = vi.fn()
       const runFn = vi.fn().mockResolvedValue({ answer: 42 })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('final', { run: runFn, route: () => 'success' }).on('success').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onComplete } })
@@ -222,7 +222,7 @@ describe('EventCallbacks', () => {
       const controller = new AbortController()
       const runFn = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       controller.abort()
 
       // act
@@ -239,7 +239,7 @@ describe('EventCallbacks', () => {
       const onComplete = vi.fn()
       const runFn = vi.fn().mockRejectedValue(new Error('step failure'))
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('bad', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onComplete } })
@@ -255,7 +255,7 @@ describe('EventCallbacks', () => {
       const onComplete = vi.fn()
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { await (ctx['interrupt'] as (p: unknown, id: string) => Promise<unknown>)('waiting for input', 'i1'); return {} })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('step', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onComplete } })
@@ -279,7 +279,7 @@ describe('EventCallbacks', () => {
       const onInterrupt = vi.fn()
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { await (ctx['interrupt'] as (p: unknown, id: string) => Promise<unknown>)({ type: 'confirm', question: 'proceed?' }, 'interrupt-abc'); return {} })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('askUser', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onInterrupt } })
@@ -297,7 +297,7 @@ describe('EventCallbacks', () => {
       const controller = new AbortController()
       const runFn = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       controller.abort()
 
       // act
@@ -314,7 +314,7 @@ describe('EventCallbacks', () => {
       const onInterrupt = vi.fn()
       const runFn = vi.fn().mockRejectedValue(new Error('domain error'))
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('fail', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onInterrupt } })
@@ -331,7 +331,7 @@ describe('EventCallbacks', () => {
       let callCount = 0
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { callCount++; await (ctx['interrupt'] as (p: unknown, id: string) => Promise<unknown>)('confirm?', 'i1'); return {} })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('askTwice', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       const firstRun = agent.run({}, { events: { onInterrupt } })
       await firstRun
       onInterrupt.mockClear()
@@ -360,7 +360,7 @@ describe('EventCallbacks', () => {
       const stubStore: SessionStore = makeStubStore({ load: vi.fn().mockRejectedValue(loadError), save: vi.fn().mockResolvedValue(undefined) })
       const runFn = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).store({ session: stubStore }).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onStoreError } })
@@ -383,7 +383,7 @@ describe('EventCallbacks', () => {
       const stubStore: SessionStore = makeStubStore({ load: vi.fn().mockResolvedValue(null), save: saveFn })
       const runFn = vi.fn().mockResolvedValue({ result: 'computed' })
       const h = createHarness<Ctx>()({}).store({ session: stubStore }).loop(l => l.start().step('compute', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onStoreError } })
@@ -414,7 +414,7 @@ describe('EventCallbacks', () => {
       let callCount = 0
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { callCount++; if (callCount === 1) { await (ctx['interrupt'] as (p: unknown, id: string) => Promise<unknown>)('input needed', 'i1') }; return { visited: callCount } })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       const firstRun = agent.run({}, { events: { onAfterStep } })
       await firstRun
       onAfterStep.mockClear()
@@ -435,6 +435,7 @@ describe('EventCallbacks', () => {
       const runFn = vi.fn().mockImplementation(async (_s: unknown, ctx: Record<string, unknown>) => { capturedCtx = ctx; return {} })
       const stubStore: SessionStore = makeStubStore({
         load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
           runId: 'r1',
           sessionId: 'session-123',
           startedAt: '2026-01-01T00:00:00.000Z',
@@ -447,7 +448,7 @@ describe('EventCallbacks', () => {
         save: vi.fn().mockResolvedValue(undefined),
       })
       const h = createHarness<Ctx>()({}).store({ session: stubStore }).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const resumeHandle = agent.resume('yes', 'session-123', 'i1')
@@ -475,9 +476,9 @@ describe('EventCallbacks', () => {
       const runAFn = vi.fn().mockImplementation(() => new Promise<Record<string, unknown>>(resolve => setTimeout(() => resolve({ from: 'A' }), 10)))
       const runBFn = vi.fn().mockImplementation(() => new Promise<Record<string, unknown>>(resolve => setTimeout(() => resolve({ from: 'B' }), 5)))
       const hA = createHarness<Ctx>()({}).loop(l => l.start().step('stepA', { run: runAFn, route: () => 'done' }).on('done').end())
-      const agentA = createAgent(hA, {})
+      const agentA = createAgent('test-agent', hA, {})
       const hB = createHarness<Ctx>()({}).loop(l => l.start().step('stepB', { run: runBFn, route: () => 'done' }).on('done').end())
-      const agentB = createAgent(hB, {})
+      const agentB = createAgent('test-agent', hB, {})
 
       // act
       const [outcomeA, outcomeB] = await Promise.all([
@@ -508,7 +509,7 @@ describe('EventCallbacks', () => {
       const onBeforeStep = vi.fn().mockImplementation(() => callOrder.push('onBeforeStep'))
       const runFn = vi.fn().mockImplementation(async () => { callOrder.push('run'); return {} })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('track', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onBeforeStep } })
@@ -527,7 +528,7 @@ describe('EventCallbacks', () => {
       const routeFn = vi.fn().mockImplementation(() => { callOrder.push('route'); return 'done' })
       const runFn = vi.fn().mockImplementation(async () => { callOrder.push('run'); return { x: 1 } })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('ordered', { run: runFn, route: routeFn }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: { onAfterStep } })
@@ -552,7 +553,7 @@ describe('EventCallbacks', () => {
       const onAfterStep = vi.fn().mockImplementation(() => { throw callbackError })
       const runFn = vi.fn().mockResolvedValue({})
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('step', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
       const run = agent.run({}, { events: { onAfterStep } })
 
       // act / assert
@@ -571,7 +572,7 @@ describe('EventCallbacks', () => {
       // arrange
       const runFn = vi.fn().mockResolvedValue({ data: 'result' })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({ initial: true }, {})
@@ -587,7 +588,7 @@ describe('EventCallbacks', () => {
       // arrange
       const runFn = vi.fn().mockResolvedValue({ x: 42 })
       const h = createHarness<Ctx>()({}).loop(l => l.start().step('work', { run: runFn, route: () => 'done' }).on('done').end())
-      const agent = createAgent(h, {})
+      const agent = createAgent('test-agent', h, {})
 
       // act
       const run = agent.run({}, { events: {} })

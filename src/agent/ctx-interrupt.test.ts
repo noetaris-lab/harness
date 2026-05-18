@@ -14,12 +14,12 @@ import type { LoopDefinition } from '../loop/loop-dsl.js'
 function build(
   fn: (l: ReturnType<typeof createLoopBuilder<
     Record<string, unknown>,
-    Record<string, unknown> & { sessionId: string }
+    Record<string, unknown> & { agentId: string; sessionId: string }
   >>) => void
 ): LoopDefinition {
   const builder = createLoopBuilder<
     Record<string, unknown>,
-    Record<string, unknown> & { sessionId: string }
+    Record<string, unknown> & { agentId: string; sessionId: string }
   >()
   fn(builder)
   return extractLoopDefinition(builder as Parameters<typeof extractLoopDefinition>[0])
@@ -173,7 +173,7 @@ describe('runLoop', () => {
       // arrange
       const state: Record<string, unknown> = {}
       const graph = build(l => l.start().step('go', { run: async () => ({}), route: () => 'done' }).on('done').end())
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -193,7 +193,7 @@ describe('runLoop', () => {
         })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -229,7 +229,7 @@ describe('runLoop', () => {
         })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -257,7 +257,7 @@ describe('runLoop', () => {
         })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -281,7 +281,7 @@ describe('runLoop', () => {
         .on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       const result = await runLoop(graph, state, ctx, undefined)
@@ -309,7 +309,7 @@ describe('runLoop', () => {
         })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -329,7 +329,7 @@ describe('runLoop', () => {
         .step('decide', { route: () => 'done' })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -353,7 +353,7 @@ describe('runLoop', () => {
         })
         .on('done').end()
       )
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -370,7 +370,7 @@ describe('runLoop', () => {
         .step('process', { route: () => 'done' }).on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined, undefined, 'process')
@@ -386,7 +386,7 @@ describe('runLoop', () => {
         .step('init', { run: initRun, route: () => 'done' }).on('done').end()
       )
       const state: Record<string, unknown> = {}
-      const ctx = { sessionId: 'test' }
+      const ctx = { agentId: 'test-agent', sessionId: 'test' }
 
       // act
       await runLoop(graph, state, ctx, undefined)
@@ -418,10 +418,10 @@ describe('runWithSession', () => {
       const store = makeStubStore({
         load: vi.fn().mockResolvedValue({ phase: 'paused', state: {}, step: 'process' })
       })
-      const ctx = { sessionId: 'sess-1' }
+      const ctx = { agentId: 'test-agent', sessionId: 'sess-1' }
 
       // act
-      await runWithSession(store, 'sess-1', randomUUID(), graph, {}, undefined, ctx)
+      await runWithSession(store, 'test-agent', 'sess-1', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).not.toHaveBeenCalled()
@@ -434,10 +434,10 @@ describe('runWithSession', () => {
       const graph = build(l => l.start()
         .step('init', { run: initRun, route: () => 'done' }).on('done').end()
       )
-      const ctx = { sessionId: 'no-store-sess' }
+      const ctx = { agentId: 'test-agent', sessionId: 'no-store-sess' }
 
       // act
-      await runWithSession(undefined, 'no-store-sess', randomUUID(), graph, {}, undefined, ctx)
+      await runWithSession(undefined, 'test-agent', 'no-store-sess', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).toHaveBeenCalledOnce()
@@ -452,10 +452,10 @@ describe('runWithSession', () => {
       const store = makeStubStore({
         load: vi.fn().mockResolvedValue({ phase: 'paused', state: {} })
       })
-      const ctx = { sessionId: 'sess-2' }
+      const ctx = { agentId: 'test-agent', sessionId: 'sess-2' }
 
       // act
-      await runWithSession(store, 'sess-2', randomUUID(), graph, {}, undefined, ctx)
+      await runWithSession(store, 'test-agent', 'sess-2', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).toHaveBeenCalledOnce()

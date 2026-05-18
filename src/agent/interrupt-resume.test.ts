@@ -24,6 +24,7 @@ function makeStubStore(): SessionStore & { load: ReturnType<typeof vi.fn>; save:
 
 function makeStoredRun(overrides: Partial<StoredRun> & Pick<StoredRun, 'phase'>): StoredRun {
   return {
+    agentId: 'test-agent',
     runId: 'default-run-id',
     sessionId: 'default-session-id',
     startedAt: '2026-01-01T00:00:00.000Z',
@@ -76,6 +77,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -94,13 +96,13 @@ describe('injectInterruptResponse', () => {
       const sessionId = 'sess-abc'
 
       // act
-      await injectInterruptResponse(store, sessionId, 'q1', 'Alice')
+      await injectInterruptResponse(store, 'test-agent', sessionId, 'q1', 'Alice')
 
       // assert
       expect(store.load).toHaveBeenCalledOnce()
-      expect(store.load).toHaveBeenCalledWith('sess-abc')
+      expect(store.load).toHaveBeenCalledWith('test-agent', 'sess-abc')
       expect(store.save).toHaveBeenCalledOnce()
-      expect(store.save).toHaveBeenCalledWith('sess-abc', expect.objectContaining({
+      expect(store.save).toHaveBeenCalledWith('test-agent', 'sess-abc', expect.objectContaining({
         phase: 'paused',
         step: 'ask',
         signal: '$interrupt',
@@ -116,6 +118,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -132,10 +135,11 @@ describe('injectInterruptResponse', () => {
       store.save.mockResolvedValue(undefined)
 
       // act
-      await injectInterruptResponse(store, 'sess-abc', 'q2', 42)
+      await injectInterruptResponse(store, 'test-agent', 'sess-abc', 'q2', 42)
 
       // assert
       expect(store.save).toHaveBeenCalledWith(
+        'test-agent',
         'sess-abc',
         expect.objectContaining({
           finalState: { $interrupt: null, $interruptResponses: { q1: 'existing', q2: 42 } },
@@ -147,6 +151,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -162,10 +167,10 @@ describe('injectInterruptResponse', () => {
       store.save.mockResolvedValue(undefined)
 
       // act
-      await injectInterruptResponse(store, 'sess-abc', 'q1', 'yes')
+      await injectInterruptResponse(store, 'test-agent', 'sess-abc', 'q1', 'yes')
 
       // assert
-      const saved = store.save.mock.calls[0]?.[1] as Record<string, unknown>
+      const saved = store.save.mock.calls[0]?.[2] as Record<string, unknown>
       expect('signal' in saved).toBe(false)
     })
   })
@@ -183,7 +188,7 @@ describe('injectInterruptResponse', () => {
 
       // act & assert
       await expect(
-        injectInterruptResponse(store, 'missing-session', 'q1', 'Alice'),
+        injectInterruptResponse(store, 'test-agent', 'missing-session', 'q1', 'Alice'),
       ).rejects.toThrow(NoInterruptError)
       expect(store.save).not.toHaveBeenCalled()
     })
@@ -192,6 +197,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -204,7 +210,7 @@ describe('injectInterruptResponse', () => {
 
       // act & assert
       await expect(
-        injectInterruptResponse(store, 'sess-abc', 'q1', 'Alice'),
+        injectInterruptResponse(store, 'test-agent', 'sess-abc', 'q1', 'Alice'),
       ).rejects.toThrow(NoInterruptError)
       expect(store.save).not.toHaveBeenCalled()
     })
@@ -213,6 +219,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -227,7 +234,7 @@ describe('injectInterruptResponse', () => {
 
       // act & assert
       await expect(
-        injectInterruptResponse(store, 'sess-abc', 'q1', 'Bob'),
+        injectInterruptResponse(store, 'test-agent', 'sess-abc', 'q1', 'Bob'),
       ).rejects.toThrow(NoInterruptError)
       expect(store.save).not.toHaveBeenCalled()
     })
@@ -236,6 +243,7 @@ describe('injectInterruptResponse', () => {
       // arrange
       const store = makeStubStore()
       store.load.mockResolvedValue({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
         startedAt: '2026-01-01T00:00:00Z',
@@ -250,7 +258,7 @@ describe('injectInterruptResponse', () => {
 
       // act & assert
       await expect(
-        injectInterruptResponse(store, 'sess-abc', 'q2', 'Alice'),
+        injectInterruptResponse(store, 'test-agent', 'sess-abc', 'q2', 'Alice'),
       ).rejects.toThrow(NoInterruptError)
       expect(store.save).not.toHaveBeenCalled()
     })
@@ -400,7 +408,7 @@ describe('run.resume() success and chaining', () => {
       }).on('done').end()
     })
 
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // First run — will pause at $auto:0
     const run1 = agent.run({}, { sessionId })
@@ -432,7 +440,7 @@ describe('agent.resume() missing store guard', () => {
         l.start().step('noop', { run: async () => ({}), route: () => 'done' }).on('done').end()
       },
     )
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // act
     const handle = agent.resume('response', 'any-session', 'any-id')
@@ -493,7 +501,7 @@ describe('agent.resume() success path', () => {
           route: () => 'done',
         }).on('done').end()
       })
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // act
     const handle = agent.resume('Alice', 'sess-sync', 'q1')
@@ -546,16 +554,17 @@ describe('agent.resume() success path', () => {
           route: () => 'done',
         }).on('done').end()
       })
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // act
     const result = await agent.resume('Alice', 'sess-twoload', 'q1')
 
     // assert
     expect(store.load).toHaveBeenCalledTimes(2)
-    expect(store.load).toHaveBeenNthCalledWith(1, 'sess-twoload')
-    expect(store.load).toHaveBeenNthCalledWith(2, 'sess-twoload')
+    expect(store.load).toHaveBeenNthCalledWith(1, expect.any(String), 'sess-twoload')
+    expect(store.load).toHaveBeenNthCalledWith(2, expect.any(String), 'sess-twoload')
     expect(store.save).toHaveBeenCalledWith(
+      expect.any(String),
       'sess-twoload',
       expect.objectContaining({
         finalState: expect.objectContaining({
@@ -615,7 +624,7 @@ describe('agent.resume() success path', () => {
           route: () => 'done',
         }).on('done').end()
       })
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // act
     const handle1 = agent.resume('A', 'sess-chain', '$auto:0')
@@ -677,7 +686,7 @@ describe('agent.resume() ctx isolation', () => {
           route: () => 'done',
         }).on('done').end()
       })
-    const agent = createAgent(h, {})
+    const agent = createAgent('test-agent', h, {})
 
     // act
     await agent.resume('response', 'sess-ctx', 'q1')
@@ -703,7 +712,7 @@ describe('injectInterruptResponse — error cases', () => {
     store.load.mockResolvedValue(null)
 
     // act & assert
-    await expect(injectInterruptResponse(store, 'sid-missing', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+    await expect(injectInterruptResponse(store, 'test-agent', 'sid-missing', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
   })
 
   it('throws NoInterruptError when loaded StoredRun has phase "completed"', async () => {
@@ -713,7 +722,7 @@ describe('injectInterruptResponse — error cases', () => {
     store.load.mockResolvedValue(completedRun)
 
     // act & assert
-    await expect(injectInterruptResponse(store, 'sid-done', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+    await expect(injectInterruptResponse(store, 'test-agent', 'sid-done', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
   })
 
   it('throws NoInterruptError when finalState.$interrupt is null', async () => {
@@ -723,7 +732,7 @@ describe('injectInterruptResponse — error cases', () => {
     store.load.mockResolvedValue(pausedRun)
 
     // act & assert
-    await expect(injectInterruptResponse(store, 'sid-no-interrupt', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
+    await expect(injectInterruptResponse(store, 'test-agent', 'sid-no-interrupt', 'iid-1', 'response')).rejects.toThrow(NoInterruptError)
   })
 
   it('throws NoInterruptError when $interrupt.interruptId does not match the provided interruptId', async () => {
@@ -737,7 +746,7 @@ describe('injectInterruptResponse — error cases', () => {
     store.load.mockResolvedValue(pausedRun)
 
     // act & assert
-    await expect(injectInterruptResponse(store, 'sid-mismatch', 'iid-wrong', 'response')).rejects.toThrow(NoInterruptError)
+    await expect(injectInterruptResponse(store, 'test-agent', 'sid-mismatch', 'iid-wrong', 'response')).rejects.toThrow(NoInterruptError)
   })
 })
 
@@ -765,11 +774,11 @@ describe('injectInterruptResponse — successful injection', () => {
     store.save.mockResolvedValue(undefined)
 
     // act
-    await injectInterruptResponse(store, pausedRun.sessionId, 'iid-42', 'blue')
+    await injectInterruptResponse(store, 'test-agent', pausedRun.sessionId, 'iid-42', 'blue')
 
     // assert
     expect(store.save).toHaveBeenCalledOnce()
-    const saved = store.save.mock.calls[0]![1] as Record<string, unknown>
+    const saved = store.save.mock.calls[0]![2] as Record<string, unknown>
     const finalState = saved['finalState'] as Record<string, unknown>
     expect(finalState['$interrupt']).toBeNull()
     expect((finalState['$interruptResponses'] as Record<string, unknown>)['iid-42']).toBe('blue')
@@ -779,6 +788,7 @@ describe('injectInterruptResponse — successful injection', () => {
   it('preserves identity fields from loaded record unchanged in saved record', async () => {
     // arrange
     const pausedRun: StoredRun = {
+      agentId: 'test-agent',
       runId: 'run-preserve-me',
       sessionId: 'sid-preserve-me',
       startedAt: '2026-01-01T00:00:00.000Z',
@@ -794,10 +804,10 @@ describe('injectInterruptResponse — successful injection', () => {
     store.save.mockResolvedValue(undefined)
 
     // act
-    await injectInterruptResponse(store, 'sid-preserve-me', 'iid-99', 42)
+    await injectInterruptResponse(store, 'test-agent', 'sid-preserve-me', 'iid-99', 42)
 
     // assert
-    const saved = store.save.mock.calls[0]![1] as StoredRun
+    const saved = store.save.mock.calls[0]![2] as StoredRun
     expect(saved.runId).toBe('run-preserve-me')
     expect(saved.sessionId).toBe('sid-preserve-me')
     expect(saved.startedAt).toBe('2026-01-01T00:00:00.000Z')
