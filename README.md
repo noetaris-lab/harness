@@ -61,8 +61,8 @@ h.provide('tools',   { search: new MySearchTool() }) // hard-coded
 h.provide('prompts', required())                     // must be supplied at createAgent()
 h.provide('model',   runtime())                      // must be supplied at agent.run()
 
-// 5. Create an agent — fills required() slots
-const agent = createAgent(h, {
+// 5. Create an agent — assigns an ID and fills required() slots
+const agent = createAgent('my-agent', h, {
   prompts: { system: 'You are a helpful assistant.' },
 })
 
@@ -72,9 +72,8 @@ const run = agent.run(
   { model: new MyLLMAdapter() },
 )
 
-for await (const event of run) {
-  console.log(event)
-}
+const outcome = await run
+console.log(outcome.signal, outcome.state)
 ```
 
 ## Concepts
@@ -140,14 +139,18 @@ The framework injects `ctx.sessionId` automatically on every run — no declarat
 
 ### Interrupts
 
-A run can be interrupted and resumed:
+A run can be stopped or resumed:
 
 ```ts
 const run = agent.run(initialState, slots)
-await run.interrupt()      // request graceful stop after the current step
+run.stop()                 // request graceful stop at the next step boundary
 
-// Later — resume from the saved session state
-const resumed = agent.run({ sessionId: existingId }, slots)
+// When a step calls ctx.interrupt(), the run settles with signal "$interrupt".
+// Resume in the same process:
+const resumed = run.resume(response, interruptId)
+
+// Or cross-process (requires a session store):
+const resumed = agent.resume(response, sessionId, interruptId)
 ```
 
 ## API
@@ -155,15 +158,20 @@ const resumed = agent.run({ sessionId: existingId }, slots)
 | Export | Description |
 |---|---|
 | `createHarness<Ctx>()(schema)` | Creates a harness. Fixes `Ctx`, infers `State` from schema. |
-| `createAgent(h, slots)` | Fills `required()` slots. Returns an `Agent`. |
+| `createAgent(id, h, slots)` | Assigns the agent an ID and fills `required()` slots. Returns an `Agent`. |
 | `field<T>(opts)` | Declares a state field with a default and optional reduce function. |
 | `required()` | Marks a provider slot as required at `createAgent()`. |
 | `runtime()` | Marks a provider slot as required at `agent.run()`. |
+| `composeObservers(...observers)` | Merges multiple `Observer` instances into one fan-out observer. |
 | `SessionStore` | Interface for session persistence backends. |
-| `StoredRun` | Type for a persisted run snapshot. |
-| `NoInterruptError` | Thrown when `run.interrupt()` is called on a non-interruptible run. |
+| `StoredRun` | Type for a persisted run snapshot. Includes `agentId`, `runId`, `sessionId`, `phase`, and state. |
+| `Observer` | Interface for telemetry hooks on run and step lifecycle events. |
+| `ObserverAware` | Interface for provider objects that accept an `Observer` binding via `bindObserver()`. |
+| `RunContext` | Context passed to run-level observer hooks — `agentId`, `sessionId`. |
+| `StepContext` | Context passed to step-level observer hooks — `agentId`, `sessionId`, `stepName`. |
+| `NoInterruptError` | Thrown when `resume()` is called but the session is not paused on a matching interrupt. |
 | `SessionInFlightError` | Thrown when a session is already running. |
-| `SessionPendingInterruptError` | Thrown when a session has a pending interrupt. |
+| `SessionPendingInterruptError` | Thrown when a session is paused on a pending interrupt — use `agent.resume()` instead of `agent.run()`. |
 | `StoreLoadError` | Thrown when the session store fails to load state. |
 
 ## Design Principles
@@ -181,7 +189,12 @@ const resumed = agent.run({ sessionId: existingId }, slots)
 
 ## Related Packages
 
-- [`@noetaris/harness-store`](https://github.com/noetaris-lab/harness-store) — session store implementations (`InMemorySessionStore`, etc.)
+- [`@noetaris/harness-store`](https://github.com/noetaris-lab/harness-store) — session store implementations (`InMemorySessionStore`, `LocalFileSessionStore`, etc.)
+- [`@noetaris/harness-types`](https://github.com/noetaris-lab/harness-types) — shared LLM type contract (`LLM`, `Message`, `Tool`, `ToolCall`, `LLMResponse`)
+- [`@noetaris/harness-anthropic`](https://github.com/noetaris-lab/harness-anthropic) — Anthropic Claude adapter
+- [`@noetaris/harness-openai`](https://github.com/noetaris-lab/harness-openai) — OpenAI adapter
+- [`@noetaris/harness-google`](https://github.com/noetaris-lab/harness-google) — Google Gemini adapter
+- [`@noetaris/harness-otel`](https://github.com/noetaris-lab/harness-otel) — OpenTelemetry observer bridge
 
 ## License
 
