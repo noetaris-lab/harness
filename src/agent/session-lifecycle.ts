@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { FieldDefinition } from '../harness/state-field.js'
 import type { ProviderEntry } from '../harness/harness-builder.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
@@ -93,6 +92,7 @@ export async function querySessionPhase(
 export async function runWithSession(
   store: SessionStore | undefined,
   sessionId: string,
+  runId: string,
   graph: LoopDefinition,
   initialStateArg: Record<string, unknown>,
   schema: Record<string, FieldDefinition<any>> | undefined, // any: FieldDefinition uses invariant T; heterogeneous schema maps require any
@@ -116,9 +116,6 @@ export async function runWithSession(
     ;(failState as Record<string, unknown>)['$error'] = storeError
     return { state: failState, signal: '$error', paused: false, cursor: null }
   }
-
-  // Generate a fresh runId for this agent.run() invocation — one UUID per runWithSession call
-  const runId = randomUUID()
 
   // Merge stored snapshot (or null for fresh) with caller-supplied initial state
   const state = initializeState(loaded, initialStateArg, schema)

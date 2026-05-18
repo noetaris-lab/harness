@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import type { SessionStore, StoredRun } from './session-store.js'
 import { runWithSession, resolveSessionStore, querySessionPhase } from './session-lifecycle.js'
 import { InterruptPause } from './ctx-interrupt.js'
@@ -100,7 +101,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-nostore' }
 
       // act
-      const result = await runWithSession(undefined, 'sid-nostore', graph, { x: 'hello' }, undefined, ctx)
+      const result = await runWithSession(undefined, 'sid-nostore', randomUUID(), graph, { x: 'hello' }, undefined, ctx)
 
       // assert
       expect(result.paused).toBe(false)
@@ -123,7 +124,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-load-fail' }
 
       // act
-      const result = await runWithSession(store, 'sid-load-fail', graph, {}, undefined, ctx, { onStoreError })
+      const result = await runWithSession(store, 'sid-load-fail', randomUUID(), graph, {}, undefined, ctx, { onStoreError })
 
       // assert
       expect(result.paused).toBe(false)
@@ -140,7 +141,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-load-fail-silent' }
 
       // act
-      const result = await runWithSession(store, 'sid-load-fail-silent', graph, {}, undefined, ctx)
+      const result = await runWithSession(store, 'sid-load-fail-silent', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(result.paused).toBe(false)
@@ -160,7 +161,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-fresh-fields' }
 
       // act
-      await runWithSession(store, 'sid-fresh-fields', graph, { count: 3 }, undefined, ctx)
+      await runWithSession(store, 'sid-fresh-fields', randomUUID(), graph, { count: 3 }, undefined, ctx)
 
       // assert
       expect(store.save).toHaveBeenCalledOnce()
@@ -171,20 +172,19 @@ describe('session-lifecycle', () => {
       expect(saved.settledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     })
 
-    it('saved StoredRun has non-empty runId UUID string and non-empty ISO startedAt', async () => {
+    it('saved StoredRun has the caller-supplied runId and non-empty ISO startedAt', async () => {
       // arrange
       const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
       const graph = makeCompletingGraph()
       const ctx = { sessionId: 'sid-runid' }
+      const expectedRunId = randomUUID()
 
       // act
-      await runWithSession(store, 'sid-runid', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-runid', expectedRunId, graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
-      expect(typeof saved.runId).toBe('string')
-      expect(saved.runId.length).toBeGreaterThan(0)
-      expect(saved.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+      expect(saved.runId).toBe(expectedRunId)
       expect(saved.startedAt).toBeTruthy()
       expect(saved.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     })
@@ -213,14 +213,14 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-resume' }
 
       // act
-      await runWithSession(store, 'sid-resume', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-resume', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
       expect(saved.initialState).toEqual({ x: 5 })
     })
 
-    it('saved runId is a freshly generated UUID, not the loaded record runId', async () => {
+    it('saved runId equals the caller-supplied runId, not the loaded record runId', async () => {
       // arrange
       const store = makeStubStore({
         load: vi.fn().mockResolvedValue({
@@ -236,14 +236,15 @@ describe('session-lifecycle', () => {
       })
       const graph = makeCompletingGraph()
       const ctx = { sessionId: 'sid-resume-id' }
+      const freshRunId = randomUUID()
 
       // act
-      await runWithSession(store, 'sid-resume-id', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-resume-id', freshRunId, graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
+      expect(saved.runId).toBe(freshRunId)
       expect(saved.runId).not.toBe('known-old-run-id')
-      expect(saved.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
     })
   })
 
@@ -259,7 +260,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-snapshot' }
 
       // act
-      await runWithSession(store, 'sid-snapshot', graph, { x: 'before' }, undefined, ctx)
+      await runWithSession(store, 'sid-snapshot', randomUUID(), graph, { x: 'before' }, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
@@ -283,7 +284,7 @@ describe('session-lifecycle', () => {
       }
 
       // act
-      await runWithSession(store, 'sid-paused-sig', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-paused-sig', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
@@ -301,7 +302,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-paused-nosig' }
 
       // act
-      await runWithSession(store, 'sid-paused-nosig', graph, {}, undefined, ctx, { shouldStop })
+      await runWithSession(store, 'sid-paused-nosig', randomUUID(), graph, {}, undefined, ctx, { shouldStop })
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
@@ -323,7 +324,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-completed-sig' }
 
       // act
-      await runWithSession(store, 'sid-completed-sig', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-completed-sig', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
@@ -340,7 +341,7 @@ describe('session-lifecycle', () => {
       spyRunLoopNoSignal()
 
       // act
-      await runWithSession(store, 'sid-completed-nosig', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sid-completed-nosig', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       const saved = (store.save as ReturnType<typeof vi.fn>).mock.calls[0]![1] as StoredRun
@@ -366,7 +367,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-persist-fail' }
 
       // act
-      const result = await runWithSession(store, 'sid-persist-fail', graph, {}, undefined, ctx, { onStoreError })
+      const result = await runWithSession(store, 'sid-persist-fail', randomUUID(), graph, {}, undefined, ctx, { onStoreError })
 
       // assert
       expect(result.paused).toBe(false)
@@ -385,7 +386,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-persist-fail-silent' }
 
       // act
-      const result = await runWithSession(store, 'sid-persist-fail-silent', graph, {}, undefined, ctx)
+      const result = await runWithSession(store, 'sid-persist-fail-silent', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(result.paused).toBe(false)
@@ -405,7 +406,7 @@ describe('session-lifecycle', () => {
       const ctx = { sessionId: 'sid-loop-throw' }
 
       // act & assert
-      await expect(runWithSession(store, 'sid-loop-throw', graph, {}, undefined, ctx)).rejects.toThrow(UnknownSignalError)
+      await expect(runWithSession(store, 'sid-loop-throw', randomUUID(), graph, {}, undefined, ctx)).rejects.toThrow(UnknownSignalError)
       expect(store.save).not.toHaveBeenCalled()
     })
   })

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { createInterruptFn, InterruptPause } from './ctx-interrupt.js'
 import { runLoop } from '../loop/loop-executor.js'
 import { runWithSession } from './session-lifecycle.js'
@@ -420,7 +421,7 @@ describe('runWithSession', () => {
       const ctx = { sessionId: 'sess-1' }
 
       // act
-      await runWithSession(store, 'sess-1', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sess-1', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).not.toHaveBeenCalled()
@@ -436,7 +437,7 @@ describe('runWithSession', () => {
       const ctx = { sessionId: 'no-store-sess' }
 
       // act
-      await runWithSession(undefined, 'no-store-sess', graph, {}, undefined, ctx)
+      await runWithSession(undefined, 'no-store-sess', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).toHaveBeenCalledOnce()
@@ -454,7 +455,7 @@ describe('runWithSession', () => {
       const ctx = { sessionId: 'sess-2' }
 
       // act
-      await runWithSession(store, 'sess-2', graph, {}, undefined, ctx)
+      await runWithSession(store, 'sess-2', randomUUID(), graph, {}, undefined, ctx)
 
       // assert
       expect(initRun).toHaveBeenCalledOnce()

@@ -432,6 +432,7 @@ describe('createAgent', () => {
         expect(typeof run.then).toBe('function')
         expect(typeof run.stop).toBe('function')
         expect(typeof run.sessionId).toBe('string')
+        expect(typeof run.runId).toBe('string')
         expect(stepCountAfterRun).toBe(0)
 
         // cleanup
@@ -496,6 +497,47 @@ describe('createAgent', () => {
         // assert
         expect(run.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
         expect(run.sessionId).not.toBe('42')
+      })
+
+      it('runId is a UUID available synchronously on the returned RunHandle', async () => {
+        // arrange
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run = agent.run({}, { model: 'gpt-4' })
+
+        // assert — available before awaiting
+        expect(run.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+
+        await run
+      })
+
+      it('each agent.run() call produces a distinct runId', async () => {
+        // arrange
+        const h = createHarness<{ model: unknown }>()()
+          .provide('model', runtime())
+          .loop(l => {
+            l.start()
+              .step('run', { run: async () => ({}), route: () => 'done' })
+              .on('done').end()
+          })
+        const agent = createAgent(h, {})
+
+        // act
+        const run1 = agent.run({}, { model: 'gpt-4', sessionId: 'sess-a' })
+        await run1
+        const run2 = agent.run({}, { model: 'gpt-4', sessionId: 'sess-b' })
+        await run2
+
+        // assert
+        expect(run1.runId).not.toBe(run2.runId)
       })
     })
 

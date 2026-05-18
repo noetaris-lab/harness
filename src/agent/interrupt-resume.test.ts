@@ -270,7 +270,7 @@ describe('createRunHandle settled outcome caching', () => {
     const execution = Promise.resolve(outcome)
     const stopFlag = { stopped: false }
     const stepRef: { current: string | null } = { current: 'ask' }
-    const run = createRunHandle('sess-1', execution, stopFlag, stepRef, resumeFn)
+    const run = createRunHandle('sess-1', 'run-1', execution, stopFlag, stepRef, resumeFn)
     await run
 
     // act
@@ -289,7 +289,7 @@ describe('createRunHandle settled outcome caching', () => {
     const execution = Promise.reject(new Error('step failure'))
     const stopFlag = { stopped: false }
     const stepRef: { current: string | null } = { current: 'crash-step' }
-    const run = createRunHandle('sess-2', execution, stopFlag, stepRef, resumeFn)
+    const run = createRunHandle('sess-2', 'run-2', execution, stopFlag, stepRef, resumeFn)
     try { await run } catch { /* suppress */ }
 
     // act
@@ -311,7 +311,7 @@ describe('run.resume() guard conditions', () => {
     let resolveExecution!: (v: RunOutcome) => void
     const execution = new Promise<RunOutcome>(r => { resolveExecution = r })
     const resumeFn = vi.fn()
-    const run = createRunHandle('sess-3', execution, { stopped: false }, { current: null }, resumeFn)
+    const run = createRunHandle('sess-3', 'run-3', execution, { stopped: false }, { current: null }, resumeFn)
 
     // act
     const callResume = () => run.resume('answer', 'q1')
@@ -327,7 +327,7 @@ describe('run.resume() guard conditions', () => {
     // arrange
     const execution = Promise.resolve({ state: {}, signal: null } as RunOutcome)
     const resumeFn = vi.fn()
-    const run = createRunHandle('sess-4', execution, { stopped: false }, { current: null }, resumeFn)
+    const run = createRunHandle('sess-4', 'run-4', execution, { stopped: false }, { current: null }, resumeFn)
     await run
 
     // act & assert
@@ -338,7 +338,7 @@ describe('run.resume() guard conditions', () => {
     // arrange
     const execution = Promise.resolve({ state: { result: 42 }, signal: 'done' } as RunOutcome)
     const resumeFn = vi.fn()
-    const run = createRunHandle('sess-5', execution, { stopped: false }, { current: null }, resumeFn)
+    const run = createRunHandle('sess-5', 'run-5', execution, { stopped: false }, { current: null }, resumeFn)
     await run
 
     // act & assert
@@ -348,7 +348,7 @@ describe('run.resume() guard conditions', () => {
   it('throws NoInterruptError when no resumeFn provided even if settled with $interrupt signal', async () => {
     // arrange
     const execution = Promise.resolve({ state: {}, signal: '$interrupt' } as RunOutcome)
-    const run = createRunHandle('sess-6', execution, { stopped: false }, { current: null }) // 4 args, no resumeFn
+    const run = createRunHandle('sess-6', 'run-6', execution, { stopped: false }, { current: null }) // 5 args, no resumeFn
     await run
 
     // act & assert
@@ -372,7 +372,7 @@ describe('run.resume() success and chaining', () => {
     } as unknown as ReturnType<typeof createRunHandle>
     const resumeFn = vi.fn().mockReturnValue(innerHandle)
     const execution = Promise.resolve({ state: { name: 'Alice' }, signal: '$interrupt' } as RunOutcome)
-    const run = createRunHandle('sess-7', execution, { stopped: false }, { current: null }, resumeFn)
+    const run = createRunHandle('sess-7', 'run-7', execution, { stopped: false }, { current: null }, resumeFn)
     await run
 
     // act

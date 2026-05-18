@@ -17,6 +17,9 @@ export interface RunHandle extends PromiseLike<RunOutcome> {
   /** The session identity for this run. */
   readonly sessionId: string
 
+  /** Unique identifier for this specific invocation (one UUID per agent.run() or agent.resume() call). */
+  readonly runId: string
+
   /**
    * The name of the step currently executing in this process.
    * null before the first step runs, after execution settles, and always when inspected cross-process.
@@ -28,6 +31,7 @@ import { NoInterruptError } from './interrupt-resume.js'
 
 export function createRunHandle(
   sessionId: string,
+  runId: string,
   execution: Promise<RunOutcome>,
   stopFlag: { stopped: boolean },
   stepRef: { current: string | null },
@@ -85,6 +89,10 @@ export function createRunHandle(
 
     get sessionId(): string {
       return sessionId
+    },
+
+    get runId(): string {
+      return runId
     },
 
     get currentStep(): string | null {

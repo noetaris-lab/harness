@@ -245,6 +245,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   ): RunHandle => {
     const flag = { stopped: false }
     const ref: { current: string | null } = { current: null }
+    const rId = randomUUID()
 
     const exec = (async (): Promise<RunOutcome> => {
       await Promise.resolve()
@@ -258,6 +259,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         const r = await runWithSession(
           capturedStore,
           sId,
+          rId,
           agentInternals.loopDef,
           {},
           agentInternals.stateSchema,
@@ -281,7 +283,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       inFlightSessions.add(sId)
       return makeAgentResumeHandle(r, sId, i)
     }
-    return createRunHandle(sId, exec, flag, ref, resumeFn)
+    return createRunHandle(sId, rId, exec, flag, ref, resumeFn)
   }
 
   // Create and return Agent with attached internals
@@ -313,6 +315,9 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       // Session ID resolution
       const sessionId =
         typeof resources['sessionId'] === 'string' ? resources['sessionId'] : randomUUID()
+
+      // Run ID — unique per agent.run() invocation, available synchronously on RunHandle
+      const runId = randomUUID()
 
       // Synchronous concurrency fences — must precede any await (per docs/agent.md Concurrency section)
       if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
@@ -372,6 +377,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           const r = await runWithSession(
             capturedStore,
             sessionId,
+            runId,
             agentInternals.loopDef,
             initialState,
             agentInternals.stateSchema,
@@ -396,6 +402,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
 
           const resumeStopFlag = { stopped: false }
           const resumeStepRef: { current: string | null } = { current: null }
+          const resumeRunId = randomUUID()
 
           const resumeExecution = (async (): Promise<RunOutcome> => {
             await Promise.resolve()
@@ -406,6 +413,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                 const r = await runWithSession(
                   capturedStore,
                   sessionId,
+                  resumeRunId,
                   agentInternals.loopDef,
                   {},
                   agentInternals.stateSchema,
@@ -465,11 +473,11 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
             }
           })()
 
-          return createRunHandle(sessionId, resumeExecution, resumeStopFlag, resumeStepRef, buildResumeFn())
+          return createRunHandle(sessionId, resumeRunId, resumeExecution, resumeStopFlag, resumeStepRef, buildResumeFn())
         }
       }
 
-      return createRunHandle(sessionId, execution, stopFlag, stepRef, buildResumeFn())
+      return createRunHandle(sessionId, runId, execution, stopFlag, stepRef, buildResumeFn())
     },
 
     resume: (response: unknown, sessionId: string, interruptId: string): RunHandle => {

@@ -14,7 +14,7 @@ describe('createRunHandle', () => {
       const stepRef = { current: null }
 
       // act
-      const run = createRunHandle('sess-1', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-1', 'run-1', execution, stopFlag, stepRef)
 
       // assert
       expect(run).toBeDefined()
@@ -32,10 +32,24 @@ describe('createRunHandle', () => {
       const stepRef = { current: null }
 
       // act
-      const run = createRunHandle(sessionId, execution, stopFlag, stepRef)
+      const run = createRunHandle(sessionId, 'run-id', execution, stopFlag, stepRef)
 
       // assert
       expect(run.sessionId).toBe('test-session-abc-123')
+    })
+
+    it('returns the exact runId string passed to createRunHandle', () => {
+      // arrange
+      const runId = 'my-unique-run-id'
+      const execution = Promise.resolve({ state: {}, signal: 'done' } as RunOutcome)
+      const stopFlag = { stopped: false }
+      const stepRef = { current: null }
+
+      // act
+      const run = createRunHandle('sess-id', runId, execution, stopFlag, stepRef)
+
+      // assert
+      expect(run.runId).toBe('my-unique-run-id')
     })
 
   })
@@ -49,7 +63,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null }
-      const run = createRunHandle('sess-1', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-2', 'run-2', execution, stopFlag, stepRef)
 
       // act
       const result = await run
@@ -65,7 +79,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null }
-      const run = createRunHandle('sess-2', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-3', 'run-3', execution, stopFlag, stepRef)
 
       // act
       const result = await run
@@ -81,7 +95,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null }
-      const run = createRunHandle('sess-3', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-4', 'run-4', execution, stopFlag, stepRef)
 
       // act
       const result = await Promise.resolve(run)
@@ -96,7 +110,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null }
-      const run = createRunHandle('sess-4', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-5', 'run-5', execution, stopFlag, stepRef)
 
       // act
       const p1 = new Promise<RunOutcome>(resolve => run.then(resolve))
@@ -119,7 +133,7 @@ describe('createRunHandle', () => {
       const execution = new Promise<RunOutcome>(r => { resolve = r })
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-5', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-6', 'run-6', execution, stopFlag, stepRef)
       stepRef.current = 'think'
 
       // act
@@ -138,7 +152,7 @@ describe('createRunHandle', () => {
       const execution = new Promise<RunOutcome>(r => { resolve = r })
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-6', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-7', 'run-7', execution, stopFlag, stepRef)
 
       // act
       const step = run.currentStep
@@ -156,7 +170,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: 'think' as string | null }
-      const run = createRunHandle('sess-7', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-8', 'run-8', execution, stopFlag, stepRef)
 
       // act
       await run
@@ -176,7 +190,7 @@ describe('createRunHandle', () => {
       const execution = new Promise<RunOutcome>(r => { resolve = r })
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-8', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-9', 'run-9', execution, stopFlag, stepRef)
 
       // act
       run.stop()
@@ -194,7 +208,7 @@ describe('createRunHandle', () => {
       const execution = new Promise<RunOutcome>(r => { resolve = r })
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-9', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-10', 'run-10', execution, stopFlag, stepRef)
       run.stop()
 
       // act
@@ -214,7 +228,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-10', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-11', 'run-11', execution, stopFlag, stepRef)
       run.stop()
 
       // act
@@ -230,7 +244,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-11', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-12', 'run-12', execution, stopFlag, stepRef)
       const result = await run
 
       // act
@@ -251,7 +265,7 @@ describe('createRunHandle', () => {
       const execution = Promise.resolve(outcome)
       const stopFlag = { stopped: false }
       const stepRef = { current: null as string | null }
-      const run = createRunHandle('sess-12', execution, stopFlag, stepRef)
+      const run = createRunHandle('sess-13', 'run-13', execution, stopFlag, stepRef)
 
       // act
       const callResume = () => run.resume({}, 'interrupt-1')
