@@ -1,13 +1,21 @@
+import type { Observer, StepContext } from './observer.js'
+
 /**
  * Create the ctx.emit function for a single runLoop invocation.
  * Returns a synchronous, fire-and-forget dispatcher.
- * Calls the matching listener if registered; no-ops for unknown names.
+ * Fires the matching listener (if registered) AND observer.onEvent (if observer
+ * is set and stepCtxRef.current is non-null) independently for each call.
  */
 export function createEmitFn(
   listeners: Record<string, (payload: unknown) => void>,
+  observer?: Observer,
+  stepCtxRef?: { current: StepContext | null },
 ): (name: string, payload?: unknown) => void {
   return (name: string, payload?: unknown): void => {
     listeners[name]?.(payload)
+    if (observer !== undefined && stepCtxRef !== undefined && stepCtxRef.current !== null) {
+      observer.onEvent?.(stepCtxRef.current, name, payload)
+    }
   }
 }
 

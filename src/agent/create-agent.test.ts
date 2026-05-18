@@ -20,6 +20,7 @@ import { required, runtime } from '../harness/ctx-markers.js'
 import { field } from '../harness/state-field.js'
 import type { LoopBuilder } from '../loop/loop-dsl.js'
 import type { RunHandle } from './run-handle.js'
+import * as loopExecutorModule from '../loop/loop-executor.js'
 
 // -----------------------------------------------------------------------
 // Shared helper: builder function that creates a minimal valid loop
@@ -1484,6 +1485,364 @@ describe('createAgent', () => {
       // assert
       expect(fnA).toHaveBeenCalledTimes(1)
       expect(fnB).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Observer wiring helpers
+  // -----------------------------------------------------------------------
+
+  function buildSlottedAgent(slot: { bindObserver: ReturnType<typeof vi.fn> }) {
+    const h = createHarness<{ adapter: typeof slot }>()()
+      .provide('adapter', required())
+      .loop(l => {
+        l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+    return createAgent('test-agent', h, { adapter: slot })
+  }
+
+  function buildLoopAgent() {
+    const h = createHarness<Record<string, never>>()()
+      .loop(l => {
+        l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+    return createAgent('test-agent', h, {})
+  }
+
+  // -----------------------------------------------------------------------
+  // Group: extractRunObserver — observer extraction from resources
+  // -----------------------------------------------------------------------
+
+  describe('Group: extractRunObserver — observer extraction from resources', () => {
+    it('calls bindObserver with {} (NOOP_OBSERVER) when resources has no observer key', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+
+      // act
+      await agent.run({}, {})
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+
+    it('calls bindObserver with {} when observer: null (null is not a plain object)', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+
+      // act
+      await agent.run({}, { observer: null } as any) // any: null is intentionally invalid to test the null guard
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+
+    it('calls bindObserver with the exact observer reference when observer is a plain object', async () => {
+      // arrange
+      const obs = { onRunStart: vi.fn() }
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+
+      // act
+      await agent.run({}, { observer: obs })
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver.mock.calls[0]![0]).toBe(obs)
+    })
+
+    it('accepts empty object {} as a valid observer — bindObserver receives the exact reference', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+      const emptyObs = {}
+
+      // act
+      await agent.run({}, { observer: emptyObs })
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver.mock.calls[0]![0]).toBe(emptyObs)
+    })
+
+    it('calls bindObserver with {} when observer: 42 (primitive is not an object)', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+
+      // act
+      await agent.run({}, { observer: 42 } as any) // any: number is intentionally invalid to test the typeof guard
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+
+    it('calls bindObserver with {} when observer is an array (arrays are not plain objects)', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const agent = buildSlottedAgent(slot)
+      const arr = [vi.fn(), vi.fn()]
+
+      // act
+      await agent.run({}, { observer: arr } as any) // any: array is intentionally invalid to test the Array.isArray guard
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: reservedRunKeys — 'observer' is silently consumed
+  // -----------------------------------------------------------------------
+
+  describe("Group: reservedRunKeys — 'observer' is silently consumed", () => {
+    it("no error when observer key is passed to an agent that has no 'observer' slot", async () => {
+      // arrange
+      const obs = { onRunStart: vi.fn() }
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      const act = () => agent.run({}, { observer: obs })
+
+      // assert
+      await expect(act()).resolves.toBeDefined()
+    })
+
+    it("no error when resources has observer alongside a harness with runtime slot named 'observer'; observer NOT injected into ctx", async () => {
+      // arrange
+      let capturedCtxObserver: unknown = 'not-checked'
+      const obs = { onRunStart: vi.fn() }
+      const h = createHarness<{ observer: unknown }>()()
+        .provide('observer', runtime())
+        .loop(l => {
+          l.start().step('run', {
+            run: async (_s: unknown, c: any) => { capturedCtxObserver = c.observer; return {} }, // any: capturing ctx fields for assertion
+            route: () => 'done',
+          }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      await agent.run({}, { observer: obs })
+
+      // assert
+      expect(capturedCtxObserver).toBeUndefined()
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: ObserverAware slot binding
+  // -----------------------------------------------------------------------
+
+  describe('Group: ObserverAware slot binding', () => {
+    it('calls bindObserver(obs) on a build-time required slot before any step runs', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const slot = { bindObserver: vi.fn().mockImplementation(() => callOrder.push('bindObserver')) }
+      const obs = { onRunStart: vi.fn() }
+      const h = createHarness<{ adapter: typeof slot }>()()
+        .provide('adapter', required())
+        .loop(l => {
+          l.start().step('run', {
+            run: async () => { callOrder.push('step.run'); return {} },
+            route: () => 'done',
+          }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      const run = agent.run({}, { observer: obs })
+      const boundBeforeAsync = slot.bindObserver.mock.calls.length
+      await run
+
+      // assert
+      expect(boundBeforeAsync).toBe(1)
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver.mock.calls[0]![0]).toBe(obs)
+      expect(callOrder[0]).toBe('bindObserver')
+      expect(callOrder[1]).toBe('step.run')
+    })
+
+    it('calls bindObserver({}) (NOOP_OBSERVER) when no observer is provided in resources', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const h = createHarness<{ adapter: typeof slot }>()()
+        .provide('adapter', required())
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      await agent.run({}, {})
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+      const arg = slot.bindObserver.mock.calls[0]![0]
+      expect(arg).not.toBeUndefined()
+    })
+
+    it('no error when a slot does NOT implement bindObserver (duck-type check fails silently)', async () => {
+      // arrange
+      const plainSlot = { doWork: vi.fn() }
+      const h = createHarness<{ tool: typeof plainSlot }>()()
+        .provide('tool', required())
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { tool: plainSlot })
+      const obs = { onRunStart: vi.fn() }
+
+      // act
+      const act = async () => await agent.run({}, { observer: obs })
+
+      // assert
+      await expect(act()).resolves.toBeDefined()
+      expect(plainSlot.doWork).not.toHaveBeenCalled()
+    })
+
+    it('calls bindObserver only on the ObserverAware slot when two slots are present', async () => {
+      // arrange
+      const observerAwareSlot = { bindObserver: vi.fn() }
+      const plainSlot = { compute: vi.fn() }
+      const h = createHarness<{ adapter: typeof observerAwareSlot; tool: typeof plainSlot }>()()
+        .provide('adapter', required())
+        .provide('tool', required())
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { adapter: observerAwareSlot, tool: plainSlot })
+      const obs = { onRunStart: vi.fn() }
+
+      // act
+      await agent.run({}, { observer: obs })
+
+      // assert
+      expect(observerAwareSlot.bindObserver).toHaveBeenCalledOnce()
+      expect(observerAwareSlot.bindObserver.mock.calls[0]![0]).toBe(obs)
+      expect(plainSlot.compute).not.toHaveBeenCalled()
+    })
+
+    it('does NOT call bindObserver when slot.bindObserver is a non-function (e.g. a string)', async () => {
+      // arrange
+      const slotWithStringProp = { bindObserver: 'not-a-function', process: vi.fn() }
+      const h = createHarness<{ adapter: typeof slotWithStringProp }>()()
+        .provide('adapter', required())
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { adapter: slotWithStringProp as any }) // any: non-function bindObserver is intentionally invalid
+      const obs = { onRunStart: vi.fn() }
+
+      // act
+      const act = async () => await agent.run({}, { observer: obs })
+
+      // assert
+      await expect(act()).resolves.toBeDefined()
+    })
+
+    it('calls bindObserver(obs) on a runtime slot that implements ObserverAware', async () => {
+      // arrange
+      const runtimeAdapter = { bindObserver: vi.fn() }
+      const obs = { onRunStart: vi.fn() }
+      const h = createHarness<{ adapter: typeof runtimeAdapter }>()()
+        .provide('adapter', runtime())
+        .loop(l => {
+          l.start().step('run', { run: async () => ({}), route: () => 'done' }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      await agent.run({}, { adapter: runtimeAdapter, observer: obs })
+
+      // assert
+      expect(runtimeAdapter.bindObserver).toHaveBeenCalledOnce()
+      expect(runtimeAdapter.bindObserver.mock.calls[0]![0]).toBe(obs)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: Observer threading through agent.run() execution
+  // -----------------------------------------------------------------------
+
+  describe('Group: Observer threading through agent.run() execution', () => {
+    it('onRunStart, onStepStart, and onRunEnd all fire when observer is provided', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onRunStart:  vi.fn().mockImplementation(() => callOrder.push('onRunStart')),
+        onStepStart: vi.fn().mockImplementation(() => callOrder.push('onStepStart')),
+        onRunEnd:    vi.fn().mockImplementation(() => callOrder.push('onRunEnd')),
+      }
+      const agent = buildLoopAgent()
+
+      // act
+      await agent.run({}, { observer: obs })
+
+      // assert
+      expect(obs.onRunStart).toHaveBeenCalledOnce()
+      expect(obs.onStepStart).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ signal: 'done', durationMs: expect.any(Number) }),
+      )
+      expect(callOrder[0]).toBe('onRunStart')
+      expect(callOrder[callOrder.length - 1]).toBe('onRunEnd')
+    })
+
+    it('callbacks.observer is absent when no observer is provided in resources', async () => {
+      // arrange
+      const agent = buildLoopAgent()
+      let capturedCallbacks: Record<string, unknown> | undefined
+      vi.spyOn(loopExecutorModule, 'runLoop').mockImplementationOnce(
+        async (_graph, _state, _ctx, _schema, _shouldStop, _store, callbacks) => {
+          capturedCallbacks = callbacks as Record<string, unknown>
+          return { signal: 'done', state: {}, paused: false, cursor: null }
+        }
+      )
+
+      // act
+      await agent.run({}, {})
+
+      // assert
+      expect(capturedCallbacks).toBeDefined()
+      expect('observer' in (capturedCallbacks ?? {})).toBe(false)
+    })
+
+    it('run.resume() does NOT fire observer events (resume path is out of scope in F16b)', async () => {
+      // arrange
+      const obs = { onRunStart: vi.fn(), onRunEnd: vi.fn(), onStepStart: vi.fn() }
+      const h = createHarness<Record<string, never>>()()
+        .loop(l => {
+          l.start().step('run', {
+            run: async (_s: unknown, c: any) => { await c.interrupt({ prompt: 'continue?' }); return {} }, // any: accessing interrupt for resume setup
+            route: () => 'done',
+          }).on('done').end()
+        })
+      const agent = createAgent('test-agent', h, {})
+      const firstRun = agent.run({}, { observer: obs })
+      await firstRun
+      const resumeFn = firstRun.resume
+      vi.clearAllMocks()
+
+      // act
+      await resumeFn({}, '$auto:0')
+
+      // assert
+      expect(obs.onRunStart).not.toHaveBeenCalled()
+      expect(obs.onStepStart).not.toHaveBeenCalled()
+      expect(obs.onRunEnd).not.toHaveBeenCalled()
     })
   })
 })

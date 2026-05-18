@@ -16,6 +16,23 @@ import { SessionInFlightError, SessionPendingInterruptError } from './concurrenc
 import { randomUUID } from 'node:crypto'
 import { extractRunEvents } from './event-callbacks.js'
 import { extractRunListeners } from './ctx-emit.js'
+import type { Observer } from './observer.js'
+
+// -----------------------------------------------------------------------
+// Module-level constants
+// -----------------------------------------------------------------------
+
+const NOOP_OBSERVER: Observer = {}
+
+// -----------------------------------------------------------------------
+// Module-private helpers
+// -----------------------------------------------------------------------
+
+function extractRunObserver(resources: Record<string, unknown>): Observer | undefined {
+  const raw = resources['observer']
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  return raw as Observer // as: duck-typed plain object confirmed; methods not validated
+}
 
 // -----------------------------------------------------------------------
 // Agent — the minimal public object returned by createAgent
@@ -231,7 +248,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   }
 
   // Reserved keys are skipped during agent.run() resource validation
-  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners'])
+  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners', 'observer'])
 
   // one per agent instance; tracks all session IDs currently executing
   const inFlightSessions = new Set<string>()
@@ -361,6 +378,14 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       const events = extractRunEvents(resources)
       const listeners = extractRunListeners(resources)
 
+      // Extract observer and bind to any ObserverAware slots synchronously before async execution begins
+      const observer = extractRunObserver(resources)
+      for (const slot of [...agentInternals.resolvedProviders.values(), ...Object.values(runtimeSlots)]) {
+        if (slot !== null && typeof slot === 'object' && typeof (slot as Record<string, unknown>)['bindObserver'] === 'function') { // as: duck-typed structural check; slot typed as unknown at this point
+          (slot as { bindObserver: (o: Observer) => void }).bindObserver(observer ?? NOOP_OBSERVER) // as: narrowed by duck-type check on line above
+        }
+      }
+
       const options: SessionRunOptions = {
         shouldStop: () => stopFlag.stopped,
         onBeforeStep: (name: string, state: Record<string, unknown>) => {
@@ -374,6 +399,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
         ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
         ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
+        ...(observer !== undefined ? { observer } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining

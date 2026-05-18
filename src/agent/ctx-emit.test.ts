@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createEmitFn, extractRunListeners } from './ctx-emit.js'
+import type { StepContext } from './observer.js'
 
 describe('createEmitFn', () => {
 
@@ -156,6 +157,118 @@ describe('extractRunListeners', () => {
       expect(result).toEqual({})
     })
 
+  })
+
+})
+
+describe('createEmitFn — observer fan-out', () => {
+
+  it('fires both listener and observer.onEvent when stepCtxRef.current is a valid StepContext', () => {
+    // arrange
+    const listenerFn = vi.fn()
+    const onEvent = vi.fn()
+    const obs = { onEvent }
+    const stepCtx: StepContext = { agentId: 'ag-1', sessionId: 'ses-1', stepName: 'step-a' }
+    const stepCtxRef = { current: stepCtx }
+    const emit = createEmitFn({ e: listenerFn }, obs, stepCtxRef)
+
+    // act
+    emit('e', 42)
+
+    // assert
+    expect(listenerFn).toHaveBeenCalledOnce()
+    expect(listenerFn).toHaveBeenCalledWith(42)
+    expect(onEvent).toHaveBeenCalledOnce()
+    expect(onEvent).toHaveBeenCalledWith(stepCtx, 'e', 42)
+  })
+
+  it('fires observer.onEvent even when no listener is registered for the event name', () => {
+    // arrange
+    const onEvent = vi.fn()
+    const obs = { onEvent }
+    const stepCtx: StepContext = { agentId: 'ag-1', sessionId: 'ses-1', stepName: 'step-a' }
+    const stepCtxRef = { current: stepCtx }
+    const emit = createEmitFn({}, obs, stepCtxRef)
+
+    // act
+    emit('x', 'value')
+
+    // assert
+    expect(onEvent).toHaveBeenCalledOnce()
+    expect(onEvent).toHaveBeenCalledWith(stepCtx, 'x', 'value')
+  })
+
+  it('skips observer.onEvent when stepCtxRef.current is null', () => {
+    // arrange
+    const listenerFn = vi.fn()
+    const onEvent = vi.fn()
+    const obs = { onEvent }
+    const stepCtxRef = { current: null }
+    const emit = createEmitFn({ e: listenerFn }, obs, stepCtxRef)
+
+    // act
+    emit('e', 42)
+
+    // assert
+    expect(listenerFn).toHaveBeenCalledOnce()
+    expect(listenerFn).toHaveBeenCalledWith(42)
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('skips observer channel when observer argument is undefined', () => {
+    // arrange
+    const listenerFn = vi.fn()
+    const stepCtx: StepContext = { agentId: 'ag-1', sessionId: 'ses-1', stepName: 's' }
+    const stepCtxRef = { current: stepCtx }
+    const emit = createEmitFn({ e: listenerFn }, undefined, stepCtxRef)
+
+    // act
+    emit('e', 42)
+
+    // assert
+    expect(listenerFn).toHaveBeenCalledOnce()
+    expect(listenerFn).toHaveBeenCalledWith(42)
+    // no throw — observer absent case completes without error
+  })
+
+  it('is backward-compatible when called with only the listeners argument (F14 usage)', () => {
+    // arrange
+    const listenerFn = vi.fn()
+    const emit = createEmitFn({ e: listenerFn })
+
+    // act
+    emit('e', 42)
+
+    // assert
+    expect(listenerFn).toHaveBeenCalledOnce()
+    expect(listenerFn).toHaveBeenCalledWith(42)
+  })
+
+  it('propagates listener throw without reaching observer.onEvent', () => {
+    // arrange
+    const listenerErr = new Error('listener error')
+    const listenerFn = vi.fn().mockImplementation(() => { throw listenerErr })
+    const onEvent = vi.fn()
+    const obs = { onEvent }
+    const stepCtx: StepContext = { agentId: 'ag-1', sessionId: 'ses-1', stepName: 's' }
+    const stepCtxRef = { current: stepCtx }
+    const emit = createEmitFn({ e: listenerFn }, obs, stepCtxRef)
+
+    // act + assert
+    expect(() => emit('e', 42)).toThrow(listenerErr)
+    expect(listenerFn).toHaveBeenCalledOnce()
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('does not throw when observer is present but has no onEvent method', () => {
+    // arrange
+    const obs = {}
+    const stepCtx: StepContext = { agentId: 'ag-1', sessionId: 'ses-1', stepName: 's' }
+    const stepCtxRef = { current: stepCtx }
+    const emit = createEmitFn({}, obs, stepCtxRef)
+
+    // act + assert
+    expect(() => emit('x', 99)).not.toThrow()
   })
 
 })

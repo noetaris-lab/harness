@@ -556,4 +556,57 @@ describe('session-lifecycle', () => {
       expect(status).toEqual({ phase: 'completed', signal: 'all-done' })
     })
   })
+
+  // -----------------------------------------------------------------------
+  // Group: SessionRunOptions.observer threading
+  // -----------------------------------------------------------------------
+
+  describe('SessionRunOptions.observer threading', () => {
+    it('runLoop receives callbacks.observer === obs when options.observer is set', async () => {
+      // arrange
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-obs-thread' }
+      const obs = { onRunStart: vi.fn(), onRunEnd: vi.fn() }
+      let capturedCallbacks: Record<string, unknown> | undefined
+      vi.spyOn(loopExecutorModule, 'runLoop').mockImplementationOnce(
+        async (_graph, _state, _ctx, _schema, _shouldStop, _store, callbacks) => {
+          capturedCallbacks = callbacks as Record<string, unknown>
+          return { signal: 'done', state: {}, paused: false, cursor: null }
+        }
+      )
+
+      // act
+      await runWithSession(
+        undefined, 'test-agent', 'sid-obs-thread', randomUUID(), graph, {}, undefined, ctx,
+        { observer: obs }
+      )
+
+      // assert
+      expect(capturedCallbacks).toBeDefined()
+      expect((capturedCallbacks as any).observer).toBe(obs) // any: capturing untyped callbacks bag for assertion
+    })
+
+    it('callbacks.observer is absent (not set to undefined) when no observer in options', async () => {
+      // arrange
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-no-obs' }
+      let capturedCallbacks: Record<string, unknown> | undefined
+      vi.spyOn(loopExecutorModule, 'runLoop').mockImplementationOnce(
+        async (_graph, _state, _ctx, _schema, _shouldStop, _store, callbacks) => {
+          capturedCallbacks = callbacks as Record<string, unknown>
+          return { signal: 'done', state: {}, paused: false, cursor: null }
+        }
+      )
+
+      // act
+      await runWithSession(
+        undefined, 'test-agent', 'sid-no-obs', randomUUID(), graph, {}, undefined, ctx,
+        {}
+      )
+
+      // assert
+      expect(capturedCallbacks).toBeDefined()
+      expect('observer' in (capturedCallbacks ?? {})).toBe(false)
+    })
+  })
 })

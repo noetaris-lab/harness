@@ -1686,4 +1686,449 @@ describe('runLoop', () => {
 
   })
 
+  describe('observer — run-level lifecycle', () => {
+
+    it('calls onRunStart exactly once with RunContext before any step executes', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const runFn = vi.fn().mockImplementation(async () => { callOrder.push('step'); return {} })
+      const obs = {
+        onRunStart: vi.fn().mockImplementation(() => callOrder.push('onRunStart')),
+      }
+      const graph = build(l =>
+        l.start().step('a', { run: runFn, route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(obs.onRunStart).toHaveBeenCalledOnce()
+      expect(obs.onRunStart).toHaveBeenCalledWith({ agentId: 'ag-1', sessionId: 'ses-1' })
+      expect(callOrder[0]).toBe('onRunStart')
+    })
+
+    it('calls onRunEnd once with exit signal and non-negative durationMs on normal completion', async () => {
+      // arrange
+      const onRunEnd = vi.fn()
+      const obs = { onRunEnd }
+      const graph = build(l =>
+        l.start().step('a', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(onRunEnd).toHaveBeenCalledOnce()
+      expect(onRunEnd).toHaveBeenCalledWith(
+        { agentId: 'ag-1', sessionId: 'ses-1' },
+        expect.objectContaining({ signal: 'done', durationMs: expect.any(Number) }),
+      )
+      const { durationMs } = (onRunEnd.mock.calls[0] as [unknown, { durationMs: number }])[1]
+      expect(durationMs).toBeGreaterThanOrEqual(0)
+    })
+
+    it('calls onRunStart then onRunEnd with $stopped when shouldStop is true on first check', async () => {
+      // arrange
+      const onRunStart = vi.fn()
+      const onRunEnd = vi.fn()
+      const stepRun = vi.fn()
+      const obs = { onRunStart, onRunEnd }
+      const graph = build(l =>
+        l.start().step('a', { run: stepRun, route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+      const shouldStop = () => true
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, shouldStop, undefined, { observer: obs })
+
+      // assert
+      expect(onRunStart).toHaveBeenCalledOnce()
+      expect(stepRun).not.toHaveBeenCalled()
+      expect(onRunEnd).toHaveBeenCalledOnce()
+      expect(onRunEnd).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ signal: '$stopped', durationMs: expect.any(Number) }),
+      )
+    })
+
+    it('calls onInterrupt then onRunEnd with $interrupt when ctx.interrupt() fires', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const onInterrupt = vi.fn().mockImplementation(() => callOrder.push('onInterrupt'))
+      const onRunEnd = vi.fn().mockImplementation(() => callOrder.push('onRunEnd'))
+      const obs = { onInterrupt, onRunEnd }
+      const graph = build(l =>
+        l.start().step('a', {
+          run: async (_s: unknown, c: any) => { await c.interrupt({ prompt: 'confirm?' }); return {} }, // any: ctx is untyped in test helper
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      const result = await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(result.signal).toBe('$interrupt')
+      expect(onInterrupt).toHaveBeenCalledOnce()
+      expect(onInterrupt).toHaveBeenCalledWith(
+        expect.objectContaining({ stepName: 'a' }),
+        expect.objectContaining({ prompt: { prompt: 'confirm?' }, interruptId: expect.any(String) }),
+      )
+      expect(onRunEnd).toHaveBeenCalledOnce()
+      expect(onRunEnd).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ signal: '$interrupt' }),
+      )
+      expect(callOrder).toEqual(['onInterrupt', 'onRunEnd'])
+    })
+
+    it('calls onRunEnd with $error when step throws a non-interrupt error (no graph.onError)', async () => {
+      // arrange
+      const onRunEnd = vi.fn()
+      const obs = { onRunEnd }
+      const graph = build(l =>
+        l.start().step('a', {
+          run: async () => { throw new Error('domain error') },
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      const result = await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(onRunEnd).toHaveBeenCalledOnce()
+      expect(onRunEnd).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ signal: '$error', durationMs: expect.any(Number) }),
+      )
+    })
+
+    it('makes no observer calls and behaves identically to pre-F16b when callbacks.observer is absent', async () => {
+      // arrange
+      const onComplete = vi.fn()
+      const graph = build(l =>
+        l.start().step('a', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act + assert — no throw, existing hook still fires
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { onComplete })
+      expect(onComplete).toHaveBeenCalledOnce()
+    })
+
+  })
+
+  describe('observer — step-level lifecycle', () => {
+
+    it('calls onStepStart before run and onStepEnd after applyUpdate with durationMs≥0', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const onStepStart = vi.fn().mockImplementation(() => callOrder.push('onStepStart'))
+      const onStepEnd = vi.fn().mockImplementation(() => callOrder.push('onStepEnd'))
+      const obs = { onStepStart, onStepEnd }
+      const graph = build(l =>
+        l.start().step('step-a', { run: async () => ({ x: 1 }), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(onStepStart).toHaveBeenCalledOnce()
+      expect(onStepStart).toHaveBeenCalledWith({ agentId: 'ag-1', sessionId: 'ses-1', stepName: 'step-a' })
+      expect(onStepEnd).toHaveBeenCalledOnce()
+      expect(onStepEnd).toHaveBeenCalledWith(
+        expect.objectContaining({ stepName: 'step-a' }),
+        expect.objectContaining({ durationMs: expect.any(Number) }),
+      )
+      const { durationMs } = (onStepEnd.mock.calls[0] as [unknown, { durationMs: number }])[1]
+      expect(durationMs).toBeGreaterThanOrEqual(0)
+      expect(callOrder).toEqual(['onStepStart', 'onStepEnd'])
+    })
+
+    it('calls onStepStart and onStepError but NOT onStepEnd when step.run throws', async () => {
+      // arrange
+      const onStepStart = vi.fn()
+      const onStepEnd = vi.fn()
+      const onStepError = vi.fn()
+      const obs = { onStepStart, onStepEnd, onStepError }
+      const domainError = new Error('step failed')
+      const graph = build(l =>
+        l.start().step('step-a', {
+          run: async () => { throw domainError },
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      const result = await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(onStepStart).toHaveBeenCalledOnce()
+      expect(onStepError).toHaveBeenCalledOnce()
+      expect(onStepError).toHaveBeenCalledWith(
+        expect.objectContaining({ stepName: 'step-a' }),
+        expect.objectContaining({ error: domainError, durationMs: expect.any(Number) }),
+      )
+      expect(onStepEnd).not.toHaveBeenCalled()
+    })
+
+    it('calls onStepStart but NOT onStepEnd or onStepError when step calls ctx.interrupt()', async () => {
+      // arrange
+      const onStepStart = vi.fn()
+      const onStepEnd = vi.fn()
+      const onStepError = vi.fn()
+      const obs = { onStepStart, onStepEnd, onStepError }
+      const graph = build(l =>
+        l.start().step('step-a', {
+          run: async (_s: unknown, c: any) => { await c.interrupt({ prompt: 'pause' }); return {} }, // any: ctx is untyped in test helper
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(onStepStart).toHaveBeenCalledOnce()
+      expect(onStepEnd).not.toHaveBeenCalled()
+      expect(onStepError).not.toHaveBeenCalled()
+    })
+
+    it('calls onStepStart but NOT onStepEnd for a decision-only step (no run function)', async () => {
+      // arrange
+      const onStepStart = vi.fn()
+      const onStepEnd = vi.fn()
+      const obs = { onStepStart, onStepEnd }
+      const graph = build(l =>
+        l.start()
+         .step('decide', { route: (s: any) => s.go ? 'done' : 'done' }) // any: untyped state in test
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = { go: true }
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(onStepStart).toHaveBeenCalledOnce()
+      expect(onStepStart).toHaveBeenCalledWith(expect.objectContaining({ stepName: 'decide' }))
+      expect(onStepEnd).not.toHaveBeenCalled()
+    })
+
+    it('fires onStepStart and onStepEnd exactly once per step, interleaved, in a 2-step loop', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onStepStart: vi.fn().mockImplementation((ctx: any) => callOrder.push(`start:${ctx.stepName}`)), // any: ctx narrowed by name access
+        onStepEnd:   vi.fn().mockImplementation((ctx: any) => callOrder.push(`end:${ctx.stepName}`)),   // any: see onStepStart
+      }
+      const graph = build(l =>
+        l.start()
+         .step('step-a', { run: async () => ({}) })
+         .step('step-b', { run: async () => ({}), route: () => 'done' })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(obs.onStepStart).toHaveBeenCalledTimes(2)
+      expect(obs.onStepEnd).toHaveBeenCalledTimes(2)
+      expect(callOrder).toEqual(['start:step-a', 'end:step-a', 'start:step-b', 'end:step-b'])
+    })
+
+  })
+
+  describe('observer — ctx.emit fan-out', () => {
+
+    it('fires both listener and observer.onEvent when ctx.emit is called in a step', async () => {
+      // arrange
+      const listenerFn = vi.fn()
+      const onEvent = vi.fn()
+      const obs = { onEvent }
+      const graph = build(l =>
+        l.start().step('step-a', {
+          run: async (_s: unknown, c: any) => { c.emit('e', 42); return {} }, // any: ctx is untyped in test helper
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs, listeners: { e: listenerFn } })
+
+      // assert
+      expect(listenerFn).toHaveBeenCalledOnce()
+      expect(listenerFn).toHaveBeenCalledWith(42)
+      expect(onEvent).toHaveBeenCalledOnce()
+      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ stepName: 'step-a' }), 'e', 42)
+    })
+
+    it('fires observer.onEvent even when no listener is registered for the event name', async () => {
+      // arrange
+      const onEvent = vi.fn()
+      const obs = { onEvent }
+      const graph = build(l =>
+        l.start().step('step-a', {
+          run: async (_s: unknown, c: any) => { c.emit('custom.event', { x: 1 }); return {} }, // any: ctx is untyped in test helper
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(onEvent).toHaveBeenCalledOnce()
+      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ stepName: 'step-a' }), 'custom.event', { x: 1 })
+    })
+
+    it('sets stepName in onEvent StepContext to the step that called ctx.emit', async () => {
+      // arrange
+      const capturedStepNames: string[] = []
+      const obs = {
+        onEvent: vi.fn().mockImplementation((ctx: any) => capturedStepNames.push(ctx.stepName)), // any: ctx narrowed by name access
+      }
+      const graph = build(l =>
+        l.start()
+         .step('step-a', {
+           run: async (_s: unknown, c: any) => { c.emit('ev', 'from-a'); return {} }, // any: ctx is untyped in test helper
+         })
+         .step('step-b', {
+           run: async (_s: unknown, c: any) => { c.emit('ev', 'from-b'); return {} }, // any: ctx is untyped in test helper
+           route: () => 'done',
+         })
+         .on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(obs.onEvent).toHaveBeenCalledTimes(2)
+      expect(capturedStepNames).toEqual(['step-a', 'step-b'])
+    })
+
+    it('fires only matching listener when no observer is present on ctx.emit', async () => {
+      // arrange
+      const listenerFn = vi.fn()
+      const graph = build(l =>
+        l.start().step('step-a', {
+          run: async (_s: unknown, c: any) => { c.emit('e', 'payload'); return {} }, // any: ctx is untyped in test helper
+          route: () => 'done',
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { listeners: { e: listenerFn } })
+
+      // assert
+      expect(listenerFn).toHaveBeenCalledOnce()
+      expect(listenerFn).toHaveBeenCalledWith('payload')
+    })
+
+  })
+
+  describe('observer — ordering invariants', () => {
+
+    it('onRunStart fires before the first onStepStart; onRunEnd fires after the last onStepEnd', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onRunStart:  vi.fn().mockImplementation(() => callOrder.push('onRunStart')),
+        onRunEnd:    vi.fn().mockImplementation(() => callOrder.push('onRunEnd')),
+        onStepStart: vi.fn().mockImplementation(() => callOrder.push('onStepStart')),
+        onStepEnd:   vi.fn().mockImplementation(() => callOrder.push('onStepEnd')),
+      }
+      const graph = build(l =>
+        l.start().step('a', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(callOrder).toEqual(['onRunStart', 'onStepStart', 'onStepEnd', 'onRunEnd'])
+    })
+
+    it('per-step order is onStepStart → step.run executes → onStepEnd → routing', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onStepStart: vi.fn().mockImplementation(() => callOrder.push('onStepStart')),
+        onStepEnd:   vi.fn().mockImplementation(() => callOrder.push('onStepEnd')),
+      }
+      const graph = build(l =>
+        l.start().step('a', {
+          run: vi.fn().mockImplementation(async () => { callOrder.push('step.run'); return {} }),
+          route: (s: any) => { callOrder.push('route'); return 'done' }, // any: untyped state in test
+        }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { observer: obs })
+
+      // assert
+      expect(callOrder).toEqual(['onStepStart', 'step.run', 'onStepEnd', 'route'])
+    })
+
+    it('onBeforeStep fires before observer.onStepStart', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const onBeforeStep = vi.fn().mockImplementation(() => callOrder.push('onBeforeStep'))
+      const onStepStart  = vi.fn().mockImplementation(() => callOrder.push('onStepStart'))
+      const graph = build(l =>
+        l.start().step('a', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { onBeforeStep, observer: { onStepStart } })
+
+      // assert
+      expect(callOrder[0]).toBe('onBeforeStep')
+      expect(callOrder[1]).toBe('onStepStart')
+    })
+
+    it('onAfterStep fires before observer.onStepEnd', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const onAfterStep = vi.fn().mockImplementation(() => callOrder.push('onAfterStep'))
+      const onStepEnd   = vi.fn().mockImplementation(() => callOrder.push('onStepEnd'))
+      const graph = build(l =>
+        l.start().step('a', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      )
+      const state: Record<string, unknown> = {}
+
+      // act
+      await runLoop(graph, state, { agentId: 'ag-1', sessionId: 'ses-1' }, undefined, undefined, undefined, { onAfterStep, observer: { onStepEnd } })
+
+      // assert
+      expect(callOrder[0]).toBe('onAfterStep')
+      expect(callOrder[1]).toBe('onStepEnd')
+    })
+
+  })
+
 })

@@ -1,5 +1,6 @@
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
+import type { Observer, RunContext, StepContext } from '../agent/observer.js'
 import { createInterruptFn, isInterruptPause } from '../agent/ctx-interrupt.js'
 import { createEmitFn } from '../agent/ctx-emit.js'
 
@@ -85,6 +86,8 @@ export interface LoopCallbacks {
    * A missing key means ctx.emit(name) is a no-op for that name.
    */
   listeners?: Record<string, (payload: unknown) => void>
+  /** Observer for structured telemetry. All lifecycle methods are optional. F16b. */
+  observer?: Observer
 }
 
 export async function runLoop(
@@ -97,6 +100,7 @@ export async function runLoop(
   callbacks?: LoopCallbacks,
 ): Promise<LoopResult> {
   const { onBeforeStep, onAfterStep, onError, onComplete, onInterrupt } = callbacks ?? {}
+  const obs = callbacks?.observer
   const implicitNextMap = buildImplicitNextMap(graph)
 
   // Initialize framework-reserved fields if absent
@@ -104,16 +108,22 @@ export async function runLoop(
   if (!('$interrupt' in state)) state.$interrupt = null
   if (!('$interruptResponses' in state)) state.$interruptResponses = {}
 
+  const runStart = Date.now()
+  const runCtx: RunContext = { agentId: ctx.agentId, sessionId: ctx.sessionId }
+  obs?.onRunStart?.(runCtx)
+
   // callCountRef is shared between createInterruptFn and the per-step reset below
   const callCountRef = { current: 0 }
+  const stepCtxRef: { current: StepContext | null } = { current: null }
   // mutate ctx in-place so step.run receives the same object reference (invariant for callers)
   ;(ctx as Record<string, unknown>)['interrupt'] = createInterruptFn(state, callCountRef) // as: Record<string, unknown> allows adding framework-injected fields to ctx
-  ;(ctx as Record<string, unknown>)['emit'] = createEmitFn(callbacks?.listeners ?? {}) // as: see interrupt line comment
+  ;(ctx as Record<string, unknown>)['emit'] = createEmitFn(callbacks?.listeners ?? {}, obs, stepCtxRef) // as: see interrupt line comment
 
   let cursor = startCursor ?? graph.entryStep!
 
   while (true) {
     if (shouldStop?.()) {
+      obs?.onRunEnd?.(runCtx, { signal: '$stopped', durationMs: Date.now() - runStart })
       return { state, signal: null, cursor, paused: true }
     }
 
@@ -124,6 +134,11 @@ export async function runLoop(
 
     // reset per-step counter before run (even for decision nodes, per design)
     callCountRef.current = 0
+
+    const stepCtx: StepContext = { agentId: ctx.agentId, sessionId: ctx.sessionId, stepName: cursor }
+    stepCtxRef.current = stepCtx
+    const stepStart = Date.now()
+    obs?.onStepStart?.(stepCtx)
 
     let runSucceeded = false
 
@@ -146,11 +161,14 @@ export async function runLoop(
         if (isInterruptPause(e)) {
           // InterruptPause was caught: $interrupt already written by createInterruptFn
           onInterrupt?.(e.prompt, e.interruptId)
+          obs?.onInterrupt?.(stepCtx, { prompt: e.prompt, interruptId: e.interruptId })
+          obs?.onRunEnd?.(runCtx, { signal: '$interrupt', durationMs: Date.now() - runStart })
           return { state, signal: '$interrupt', cursor, paused: true }
         }
         // domain error: normalize to Error and set $error; do not rethrow
         state.$error = e instanceof Error ? e : new Error(String(e))
         onError?.(state.$error, cursor)
+        obs?.onStepError?.(stepCtx, { error: state.$error, durationMs: Date.now() - stepStart })
       }
     }
 
@@ -158,6 +176,7 @@ export async function runLoop(
       // clear $error after a successful run, before calling route
       state.$error = null
       onAfterStep?.(cursor, state)
+      obs?.onStepEnd?.(stepCtx, { durationMs: Date.now() - stepStart })
     }
 
     // route is called when: route exists AND (run succeeded, step has no run, OR step opted in
@@ -175,6 +194,7 @@ export async function runLoop(
       } catch (e) {
         // route itself threw — treat as terminal error; state update from run already stands
         state.$error = e instanceof Error ? e : new Error(String(e))
+        obs?.onRunEnd?.(runCtx, { signal: '$error', durationMs: Date.now() - runStart })
         return { state, signal: '$error', cursor, paused: true }
       }
       const transition = step.transitions.find(t => t.signal === signal)
@@ -183,6 +203,7 @@ export async function runLoop(
       }
       if (transition.target.kind === 'end') {
         onComplete?.(state, signal)
+        obs?.onRunEnd?.(runCtx, { signal, durationMs: Date.now() - runStart })
         return { state, signal, cursor: null, paused: false }
       }
       cursor = transition.target.name
@@ -191,6 +212,7 @@ export async function runLoop(
       if (graph.onError !== undefined) {
         cursor = graph.onError
       } else {
+        obs?.onRunEnd?.(runCtx, { signal: '$error', durationMs: Date.now() - runStart })
         return { state, signal: '$error', cursor, paused: true }
       }
     } else {

@@ -3,6 +3,7 @@ import type { ProviderEntry } from '../harness/harness-builder.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { LoopResult } from '../loop/loop-executor.js'
 import { runLoop } from '../loop/loop-executor.js'
+import type { Observer } from './observer.js'
 import {
   type SessionStore,
   type StoredRun,
@@ -36,6 +37,8 @@ export interface SessionRunOptions {
   readonly onInterrupt?: (prompt: unknown, interruptId: string) => void
   /** Listeners for user-emitted events (ctx.emit). Keyed by event name. */
   readonly listeners?: Record<string, (payload: unknown) => void>
+  /** Structured telemetry observer for this run. All methods optional. F16b. */
+  readonly observer?: Observer
 }
 
 // -----------------------------------------------------------------------
