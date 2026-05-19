@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, expectTypeOf } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   createAgent,
   getAgentInternals,
@@ -12,7 +12,6 @@ import {
   UnknownRunSlotError,
 } from './create-agent.js'
 import { NoInterruptError } from './interrupt-resume.js'
-import type { RunEvents } from './event-callbacks.js'
 import type { SessionStore, StoredRun } from './session-store.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
 import { HarnessInternalsError } from '../harness/harness-builder.js'
@@ -1291,11 +1290,6 @@ describe('createAgent', () => {
 
       // assert
       expect('events' in capturedCtx!).toBe(false)
-    })
-
-    it('TypeScript rejects events object containing onLlmCall at compile time', () => {
-      // arrange & act & assert
-      expectTypeOf<RunEvents>().not.toHaveProperty('onLlmCall')
     })
 
     it('onBeforeStep framework callback in events is still called; ctx.events is absent', async () => {

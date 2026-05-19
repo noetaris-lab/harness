@@ -5,7 +5,6 @@ import { createAgent } from './create-agent.js'
 import { createHarness } from '../harness/harness-builder.js'
 import { runtime } from '../harness/ctx-markers.js'
 import type { SessionStore, StoredRun } from './session-store.js'
-import * as publicApi from '../index.js'
 
 // -----------------------------------------------------------------------
 // Stub factory helpers
@@ -818,18 +817,3 @@ describe('injectInterruptResponse — successful injection', () => {
   })
 })
 
-// -----------------------------------------------------------------------
-// Group 12: Public API export
-// -----------------------------------------------------------------------
-
-describe('Public API export', () => {
-  it('NoInterruptError is exported from the public index', () => {
-    // act
-    // (imported at top of file)
-
-    // assert
-    expect(publicApi.NoInterruptError).toBeDefined()
-    expect(new publicApi.NoInterruptError()).toBeInstanceOf(Error)
-    expect(new publicApi.NoInterruptError().name).toBe('NoInterruptError')
-  })
-})

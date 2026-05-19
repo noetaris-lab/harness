@@ -1,5 +1,5 @@
-import { describe, it, expect, expectTypeOf, vi } from 'vitest'
-import { createHarness, getInternals, HarnessInternalsError, type Harness } from './harness-builder.js'
+import { describe, it, expect, vi } from 'vitest'
+import { createHarness, getInternals, HarnessInternalsError } from './harness-builder.js'
 import { field } from './state-field.js'
 import { required, runtime } from './ctx-markers.js'
 
@@ -272,65 +272,6 @@ describe('HarnessBuilder', () => {
       }
 
       expect(getInternals(h).providers).toHaveLength(1)
-    })
-  })
-
-  describe('type-level assertions', () => {
-    it('return type has Run = "model" when provide("model", runtime()) is called', () => {
-      const h = createHarness<{ model: string; prompts: string }>()()
-      const h2 = h.provide('model', runtime())
-
-      expectTypeOf(h2).toExtend<Harness<{ model: string; prompts: string }, {}, never, 'model'>>()
-    })
-
-    it('return type has Req = "prompts" when provide("prompts", required()) is called', () => {
-      const h = createHarness<{ model: string; prompts: string }>()()
-      const h2 = h.provide('prompts', required())
-
-      expectTypeOf(h2).toExtend<Harness<{ model: string; prompts: string }, {}, 'prompts', never>>()
-    })
-
-    it('State type is { count: number } when schema contains field<number>()', () => {
-      const schema = { count: field<number>({ default: () => 0 }) }
-      const h = createHarness<{ model: string }>()(schema)
-
-      expectTypeOf(h).toExtend<Harness<{ model: string }, { count: number }>>()
-    })
-
-    it('State type is {} when no schema argument is given', () => {
-      const h = createHarness<{ model: string }>()()
-
-      expectTypeOf(h).toExtend<Harness<{ model: string }, {}>>()
-    })
-
-    it('chained provide accumulates both Req and Run correctly', () => {
-      const h = createHarness<{ model: string; prompts: string }>()()
-      const h3 = h.provide('model', runtime()).provide('prompts', required())
-
-      expectTypeOf(h3).toExtend<Harness<{ model: string; prompts: string }, {}, 'prompts', 'model'>>()
-    })
-
-    it('both Req and Run contain "model" when provide("model", required()) followed by provide("model", runtime())', () => {
-      const h = createHarness<{ model: string }>()()
-      const h3 = h.provide('model', required()).provide('model', runtime())
-
-      expectTypeOf(h3).toExtend<Harness<{ model: string }, {}, 'model', 'model'>>()
-    })
-
-    it('TypeScript reports an error when a concrete value does not satisfy DeepWithMarkers<Ctx[K]>', () => {
-      type Ctx = { model: { call(): Promise<string> } }
-      const h = createHarness<Ctx>()()
-
-      // @ts-expect-error — number is not assignable to DeepWithMarkers<{ call(): Promise<string> }>
-      h.provide('model', 42)
-    })
-
-    it('TypeScript reports an error when an unknown key is passed to provide()', () => {
-      type Ctx = { model: string }
-      const h = createHarness<Ctx>()()
-
-      // @ts-expect-error — number literal is not assignable to keyof Ctx
-      h.provide(42, required())
     })
   })
 

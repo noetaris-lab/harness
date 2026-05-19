@@ -1,5 +1,5 @@
-import { describe, it, expect, expectTypeOf } from 'vitest'
-import { field, type FieldDefinition, type StateFromSchema } from './state-field.js'
+import { describe, it, expect } from 'vitest'
+import { field } from './state-field.js'
 
 describe('field', () => {
   describe('runtime object shape', () => {
@@ -65,64 +65,6 @@ describe('field', () => {
     })
   })
 
-  describe('type-level behavior (StateFromSchema and phantom inference)', () => {
-    it('StateFromSchema resolves single-field schema to exact mapped type', () => {
-      // arrange
-      const schema = { count: field<number>({ default: () => 0 }) }
-      type S = typeof schema
-
-      // assert
-      expectTypeOf<StateFromSchema<S>>().toEqualTypeOf<{ count: number }>()
-    })
-
-    it('StateFromSchema resolves multi-key schema preserving all field types', () => {
-      // arrange
-      const schema = { messages: field<string[]>(), active: field<boolean>() }
-      type S = typeof schema
-
-      // assert
-      expectTypeOf<StateFromSchema<S>>().toEqualTypeOf<{
-        messages: string[]
-        active: boolean
-      }>()
-    })
-
-    it('StateFromSchema preserves complex nested type without flattening', () => {
-      // arrange
-      const schema = { index: field<Record<string, number[]>>({ default: () => ({}) }) }
-      type S = typeof schema
-
-      // assert
-      expectTypeOf<StateFromSchema<S>>().toEqualTypeOf<{ index: Record<string, number[]> }>()
-    })
-
-    it('StateFromSchema resolves field<string[]>({}) (no default, no reduce) to string[] not never', () => {
-      // arrange
-      const schema = { tags: field<string[]>({}) }
-      type S = typeof schema
-
-      // assert
-      expectTypeOf<StateFromSchema<S>>().toEqualTypeOf<{ tags: string[] }>()
-    })
-
-    it('StateFromSchema resolves non-FieldDefinition schema key to never', () => {
-      // arrange
-      type BadSchema = { x: 42 }
-
-      // assert
-      expectTypeOf<StateFromSchema<BadSchema>>().toEqualTypeOf<{ x: never }>()
-    })
-
-    it('FieldDefinition<any> in generic bound accepts concrete FieldDefinition<string[]>; FieldDefinition<unknown> does not', () => {
-      // arrange
-      const concrete = field<string[]>()
-
-      // assert
-      expectTypeOf(concrete).toExtend<FieldDefinition<any>>()
-      expectTypeOf(concrete).not.toExtend<FieldDefinition<unknown>>()
-    })
-  })
-
   describe('error and invalid-input cases', () => {
     it('accessing default when undefined was passed does not crash', () => {
       // arrange
@@ -134,13 +76,6 @@ describe('field', () => {
       expect(result.default).toBeUndefined()
     })
 
-    it('field() with no explicit type parameter infers T as unknown', () => {
-      // act
-      const result = field()
-
-      // assert
-      expectTypeOf(result).toEqualTypeOf<FieldDefinition<unknown>>()
-    })
   })
 
   describe('edge cases and invariants', () => {

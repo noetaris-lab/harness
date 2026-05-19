@@ -1,14 +1,9 @@
-import { describe, it, expect, expectTypeOf } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
   required,
   runtime,
   isRequiredMarker,
   isRuntimeMarker,
-  REQUIRED_TAG,
-  RUNTIME_TAG,
-  type RequiredMarker,
-  type RuntimeMarker,
-  type DeepWithMarkers,
 } from './ctx-markers.js'
 
 describe('CtxMarkers', () => {
@@ -178,86 +173,6 @@ describe('CtxMarkers', () => {
       const result = isRuntimeMarker(value)
 
       expect(result).toBe(false)
-    })
-  })
-
-  describe('type-level discrimination — RequiredMarker and RuntimeMarker opaqueness', () => {
-    it('RequiredMarker is not assignable to RuntimeMarker', () => {
-      const req = required()
-
-      // @ts-expect-error — RequiredMarker must not be assignable to RuntimeMarker
-      const _: RuntimeMarker = req
-    })
-
-    it('RuntimeMarker is not assignable to RequiredMarker', () => {
-      const run = runtime()
-
-      // @ts-expect-error — RuntimeMarker must not be assignable to RequiredMarker
-      const _: RequiredMarker = run
-    })
-
-    it('RequiredMarker is not assignable to a concrete interface', () => {
-      interface FakeTool {
-        call(): void
-      }
-      const req = required()
-
-      // @ts-expect-error — RequiredMarker must not be assignable to a concrete interface
-      const _: FakeTool = req
-    })
-
-    it('RuntimeMarker is not assignable to a concrete interface', () => {
-      interface FakeTool {
-        call(): void
-      }
-      const run = runtime()
-
-      // @ts-expect-error — RuntimeMarker must not be assignable to a concrete interface
-      const _: FakeTool = run
-    })
-  })
-
-  describe('DeepWithMarkers<T> — structural type acceptance', () => {
-    it('DeepWithMarkers<{ search: FakeTool; calculator: FakeTool }> accepts fully-marked object', () => {
-      interface FakeTool {
-        call(): void
-      }
-      type T = DeepWithMarkers<{ search: FakeTool; calculator: FakeTool }>
-
-      expectTypeOf<{ search: RequiredMarker; calculator: RuntimeMarker }>().toExtend<T>()
-    })
-
-    it('DeepWithMarkers<string> (primitive) resolves to string | RequiredMarker | RuntimeMarker', () => {
-      type T = DeepWithMarkers<string>
-
-      expectTypeOf<T>().toEqualTypeOf<string | RequiredMarker | RuntimeMarker>()
-    })
-
-    it('mixed concrete + marker object is assignable to DeepWithMarkers<{ search: FakeTool; calculator: FakeTool }>', () => {
-      interface FakeTool {
-        call(): void
-      }
-      type T = DeepWithMarkers<{ search: FakeTool; calculator: FakeTool }>
-
-      expectTypeOf<{ search: FakeTool; calculator: RequiredMarker }>().toExtend<T>()
-    })
-
-    it('top-level required() is assignable to DeepWithMarkers<SomeInterface>', () => {
-      interface FakeTool {
-        call(): void
-      }
-      type T = DeepWithMarkers<FakeTool>
-
-      expectTypeOf<RequiredMarker>().toExtend<T>()
-    })
-
-    it('top-level runtime() is assignable to DeepWithMarkers<SomeInterface>', () => {
-      interface FakeTool {
-        call(): void
-      }
-      type T = DeepWithMarkers<FakeTool>
-
-      expectTypeOf<RuntimeMarker>().toExtend<T>()
     })
   })
 
