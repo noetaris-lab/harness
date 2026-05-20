@@ -2,7 +2,14 @@
 // Framework-reserved state fields — readable in run/route, not writable from run return
 // -----------------------------------------------------------------------
 
-/** Framework fields injected into every step function's state argument. */
+/**
+ * Framework-managed fields injected into every step function's `state` argument.
+ *
+ * - `$error` — the `Error` thrown by the previous step, or `null` if no error occurred.
+ *   Only populated on the error path; non-error-aware steps never see a non-null value here.
+ * - `$interrupt` — set while a step is awaiting a resume response.  The `response` field
+ *   is populated after {@link Agent.resume} is called.
+ */
 export interface FrameworkState {
   readonly $error: Error | null
   readonly $interrupt: {
@@ -12,7 +19,10 @@ export interface FrameworkState {
   } | null
 }
 
-/** The full state type visible inside step functions: user state + framework fields. */
+/**
+ * The complete state type visible inside {@link RunFn} step functions:
+ * the user-defined state `S` merged with {@link FrameworkState}.
+ */
 export type StepState<S> = S & FrameworkState
 
 // -----------------------------------------------------------------------

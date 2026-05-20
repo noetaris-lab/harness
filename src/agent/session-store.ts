@@ -9,10 +9,39 @@ type SchemaLike = Record<string, {
 // SessionStore — the persistence contract
 // -----------------------------------------------------------------------
 
+/**
+ * Persistence contract for agent sessions.
+ *
+ * Implementations must be safe to call concurrently for **different** sessions;
+ * concurrent calls for the **same** session are prevented by the harness concurrency guards.
+ *
+ * `loadHistory` and `branch` are optional extensions:
+ * - `loadHistory` — full run history for a session (used by branching and debugging tools).
+ * - `branch` — fork a session at a specific past run, returning a new session ID.
+ */
 export interface SessionStore {
+  /**
+   * Load the most recent {@link StoredRun} for the given session, or `null` if
+   * the session has never been saved.
+   */
   load(agentId: string, sessionId: string): Promise<StoredRun | null>
+
+  /** Persist a run record, overwriting any previous record for the same session. */
   save(agentId: string, sessionId: string, run: StoredRun): Promise<void>
+
+  /**
+   * Return the full ordered run history for a session, oldest first.
+   * Optional — omit if your store does not support history.
+   */
   loadHistory?(agentId: string, sessionId: string): Promise<StoredRun[]>
+
+  /**
+   * Fork the session at the state captured by `runId`, returning a new session ID
+   * whose initial state equals the forked run's `finalState`.
+   * Optional — omit if your store does not support branching.
+   *
+   * @throws {@link BranchNotFoundError} when `runId` is not found in history.
+   */
   branch?(agentId: string, sessionId: string, runId: string): Promise<string>
 }
 
@@ -20,6 +49,15 @@ export interface SessionStore {
 // StoredRun — the per-run serialized record (replaces StoredSession)
 // -----------------------------------------------------------------------
 
+/**
+ * Serializable snapshot of a single agent run, written to the store after
+ * every run settles (either `'paused'` on an interrupt or `'completed'`).
+ *
+ * - `phase: 'paused'` — the run paused on an interrupt; `step` is the step that
+ *   issued the interrupt and `signal` is `'$interrupt'`.
+ * - `phase: 'completed'` — the loop exited normally; `signal` holds the exit
+ *   signal (or is absent when the loop ended without emitting a signal).
+ */
 export interface StoredRun {
   readonly agentId: string
   readonly runId: string
@@ -37,6 +75,17 @@ export interface StoredRun {
 // SessionPhase — the agent.status() query result
 // -----------------------------------------------------------------------
 
+/**
+ * Discriminated union returned by {@link Agent.status} describing the lifecycle
+ * phase of a session.
+ *
+ * - `'fresh'` — no run has been stored yet.
+ * - `'in-flight'` — a run is currently executing (in-process guard only; not
+ *   detectable cross-process from the store alone).
+ * - `'paused'` — the last run settled on an interrupt; `step` identifies the
+ *   step that issued the interrupt.
+ * - `'completed'` — the last run exited the loop; `signal` is the exit signal.
+ */
 export type SessionPhase =
   | { readonly phase: 'fresh' }
   | { readonly phase: 'in-flight'; readonly step: null }

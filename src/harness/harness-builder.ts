@@ -8,19 +8,60 @@ import { validateLoop } from '../loop/loop-validator.js'
 // Harness type — accumulated at the type level across provide() calls
 // -----------------------------------------------------------------------
 
+/**
+ * Immutable builder that accumulates context-slot declarations, store bindings,
+ * and the loop definition for an agent.  Produced by {@link createHarness} and
+ * consumed by {@link createAgent}.
+ *
+ * The four type parameters track what has been declared so far:
+ * - `Ctx` — the full context shape expected by step functions.
+ * - `State` — the state record shape derived from the schema passed to `createHarness()`.
+ * - `Req` — keys declared as {@link required} (must be supplied to `createAgent`).
+ * - `Run` — keys declared as {@link runtime} (must be supplied to `agent.run()`).
+ *
+ * Each call returns a **new** `Harness` instance; the original is unchanged.
+ *
+ * @example
+ * ```ts
+ * const h = createHarness<Ctx>()(schema)
+ *   .provide('llm', required())
+ *   .provide('model', 'claude-3-5-haiku-20241022')
+ *   .store({ session: new InMemorySessionStore() })
+ *   .loop(l => {
+ *     l.start().step('run', { run, route }).on('done').end()
+ *   })
+ * ```
+ */
 export type Harness<
   Ctx,
   State,
   Req extends keyof Ctx = never,
   Run extends keyof Ctx = never,
 > = {
+  /**
+   * Declare a context slot.
+   *
+   * - Pass {@link required} to require the value at `createAgent()` time.
+   * - Pass {@link runtime} to require the value at `agent.run()` time.
+   * - Pass any concrete value (or a deep object mixing in markers) to bind it now.
+   */
   provide<K extends keyof Ctx>(key: K, value: RequiredMarker): Harness<Ctx, State, Req | K, Run>
   provide<K extends keyof Ctx>(key: K, value: RuntimeMarker): Harness<Ctx, State, Req, Run | K>
   provide<K extends keyof Ctx>(key: K, value: DeepWithMarkers<Ctx[K]>): Harness<Ctx, State, Req, Run>
 
+  /**
+   * Bind session store(s).  Pass `{ session: myStore }` to enable persistence and
+   * interrupt/resume across processes.
+   */
   // store() Req/Run are not affected at the type level; nested markers are runtime-validated only (F2 spike constraint)
   store(stores: DeepWithMarkers<{ session?: unknown } & Record<string, unknown>>): Harness<Ctx, State, Req, Run>
 
+  /**
+   * Define the execution loop using the {@link LoopBuilder} DSL.
+   *
+   * @param builder - Callback that receives a `LoopBuilder` and uses it to
+   *   declare steps, transitions, and the entry point.
+   */
   // loop() parameter is LoopBuilder<State, Ctx> after F4 implementation
   loop(builder: (l: LoopBuilder<State, Ctx>) => void): Harness<Ctx, State, Req, Run>
 }
@@ -86,6 +127,7 @@ export function getInternals<
 // Error class
 // -----------------------------------------------------------------------
 
+/** @internal Thrown when {@link getInternals} is called on a non-harness value. */
 export class HarnessInternalsError extends Error {
   constructor() {
     super('value is not a HarnessBuilder instance — was it created by createHarness?')
@@ -97,6 +139,20 @@ export class HarnessInternalsError extends Error {
 // createHarness — the public factory
 // -----------------------------------------------------------------------
 
+/**
+ * Create a harness builder for the given context type.
+ *
+ * Call the returned function (optionally with a state schema) to get the
+ * {@link Harness} builder on which you chain `.provide()`, `.store()`, and `.loop()`.
+ *
+ * @example
+ * ```ts
+ * interface Ctx { llm: LLM; model: string }
+ * const schema = { messages: field<string[]>({ default: () => [] }) }
+ *
+ * const h = createHarness<Ctx>()(schema)
+ * ```
+ */
 export function createHarness<Ctx = any>(): <S extends object = {}>( // any: allows createHarness() without an explicit Ctx type parameter
   stateSchema?: S,
 ) => Harness<Ctx, StateFromSchema<S>> {

@@ -1,3 +1,23 @@
+/**
+ * `@noetaris/harness` — execution loop, state management, routing, and provider abstraction
+ * for building LLM agents.
+ *
+ * **Quick start:**
+ * ```ts
+ * import { createHarness, createAgent, field } from '@noetaris/harness'
+ *
+ * const h = createHarness<{ llm: LLM }>()()
+ *   .provide('llm', required())
+ *   .loop(l => {
+ *     l.start().step('run', { run, route }).on('done').end()
+ *   })
+ *
+ * const agent = createAgent('my-agent', h, { llm })
+ * const { state } = await agent.run({}, {})
+ * ```
+ *
+ * @packageDocumentation
+ */
 export { field, type FieldDefinition, type StateFromSchema } from './harness/state-field.js'
 export {
   required,

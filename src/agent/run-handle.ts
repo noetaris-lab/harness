@@ -1,28 +1,56 @@
+/**
+ * The resolved value of a {@link RunHandle} promise: the final state and the
+ * signal that caused the loop to exit.
+ *
+ * `signal` is `null` when the loop exited via `.end()` without an explicit signal,
+ * `'$interrupt'` when paused on an interrupt, or any custom signal string returned
+ * by a route function.
+ */
 export interface RunOutcome {
   readonly state: Record<string, unknown>
   readonly signal: string | null
 }
 
+/**
+ * Handle returned synchronously by {@link Agent.run} and {@link Agent.resume}.
+ *
+ * Implements `PromiseLike<RunOutcome>` so it can be `await`-ed directly.
+ *
+ * @example
+ * ```ts
+ * const handle = agent.run({}, { llm })
+ * console.log(handle.sessionId)   // available immediately
+ * const { state, signal } = await handle
+ * ```
+ */
 export interface RunHandle extends PromiseLike<RunOutcome> {
   /** Cancel the in-flight run at the next safe point between steps. Idempotent. */
   stop(): void
 
   /**
-   * Provide a response to a pending ctx.interrupt() call.
-   * Returns a new RunHandle for the resumed execution.
-   * Stub in F8 — implemented in F9.
+   * Provide a response to a pending `ctx.interrupt()` call and start a new run.
+   * Returns a new {@link RunHandle} for the resumed execution.
+   *
+   * Throws {@link NoInterruptError} when the run has not settled on `signal: '$interrupt'`.
+   *
+   * @param response - The value to deliver as the interrupt response.
+   * @param interruptId - The `interruptId` from `state.$interrupt`.
    */
   resume(response: unknown, interruptId: string): RunHandle
 
   /** The session identity for this run. */
   readonly sessionId: string
 
-  /** Unique identifier for this specific invocation (one UUID per agent.run() or agent.resume() call). */
+  /**
+   * Unique identifier for this specific invocation.
+   * One UUID per `agent.run()` or `agent.resume()` call.
+   */
   readonly runId: string
 
   /**
    * The name of the step currently executing in this process.
-   * null before the first step runs, after execution settles, and always when inspected cross-process.
+   * `null` before the first step runs, after execution settles, and always
+   * when inspected cross-process.
    */
   readonly currentStep: string | null
 }

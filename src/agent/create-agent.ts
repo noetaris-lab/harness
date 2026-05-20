@@ -79,6 +79,7 @@ export interface AgentInternals {
 // Error classes
 // -----------------------------------------------------------------------
 
+/** Thrown by {@link createAgent} when the harness has no `.loop()` declaration. */
 export class MissingLoopError extends Error {
   constructor() {
     super('harness has no loop — call h.loop() before createAgent(id, h, slots)')
@@ -86,7 +87,9 @@ export class MissingLoopError extends Error {
   }
 }
 
+/** Thrown by {@link createAgent} when a `required()` slot is absent from `slots`. */
 export class MissingSlotError extends Error {
+  /** The missing slot key. */
   readonly key: string
 
   constructor(key: string) {
@@ -96,7 +99,9 @@ export class MissingSlotError extends Error {
   }
 }
 
+/** Thrown by {@link createAgent} when a `runtime()` slot is passed in `slots` instead of `agent.run()`. */
 export class RuntimeSlotInAgentError extends Error {
+  /** The offending slot key. */
   readonly key: string
 
   constructor(key: string) {
@@ -106,7 +111,9 @@ export class RuntimeSlotInAgentError extends Error {
   }
 }
 
+/** Thrown by {@link createAgent} when `slots` contains a key not declared in the harness. */
 export class UnknownSlotError extends Error {
+  /** The unknown slot key. */
   readonly key: string
 
   constructor(key: string) {
@@ -116,6 +123,7 @@ export class UnknownSlotError extends Error {
   }
 }
 
+/** @internal Thrown when `getAgentInternals` is called on a non-agent value. */
 export class AgentInternalsError extends Error {
   constructor() {
     super('value was not produced by createAgent — cannot read AgentInternals')
@@ -123,7 +131,9 @@ export class AgentInternalsError extends Error {
   }
 }
 
+/** Thrown by {@link Agent.run} when a `runtime()` slot is absent from `resources`. */
 export class MissingRuntimeSlotError extends Error {
+  /** The missing runtime slot key. */
   readonly key: string
   constructor(key: string) {
     super(`runtime slot "${key}" was not provided in agent.run() resources`)
@@ -132,7 +142,9 @@ export class MissingRuntimeSlotError extends Error {
   }
 }
 
+/** Thrown by {@link Agent.run} when a `required()` slot is passed in `resources` instead of `createAgent()`. */
 export class RequiredSlotInRunError extends Error {
+  /** The offending slot key. */
   readonly key: string
   constructor(key: string) {
     super(`slot "${key}" is a required() slot — provide it in createAgent(), not agent.run()`)
@@ -141,7 +153,9 @@ export class RequiredSlotInRunError extends Error {
   }
 }
 
+/** Thrown by {@link Agent.run} when `resources` contains a key that was not declared as `runtime()`. */
 export class UnknownRunSlotError extends Error {
+  /** The unknown resource key. */
   readonly key: string
   constructor(key: string) {
     super(`slot "${key}" is not a runtime() slot — do not pass it in agent.run() resources`)
@@ -164,6 +178,29 @@ type AgentWithInternals = Agent & {
 // createAgent — the public factory
 // -----------------------------------------------------------------------
 
+/**
+ * Instantiate an agent from a fully-configured {@link Harness}.
+ *
+ * Validates that all `required()` slots are present in `slots`, that no
+ * `runtime()` slots are passed here, and that the harness has a loop defined.
+ *
+ * @param id - A stable, human-readable identifier for this agent (used as the
+ *   first argument to every store operation).
+ * @param h - The harness produced by `createHarness()...loop()`.
+ * @param slots - Values for every slot declared with `required()` in the harness.
+ *
+ * @throws {@link MissingLoopError} when `h.loop()` was never called.
+ * @throws {@link MissingSlotError} when a `required()` slot is absent from `slots`.
+ * @throws {@link RuntimeSlotInAgentError} when a `runtime()` slot is passed in `slots`.
+ * @throws {@link UnknownSlotError} when `slots` contains a key not declared in the harness.
+ *
+ * @example
+ * ```ts
+ * const agent = createAgent('my-agent', h, { llm: new Claude('claude-3-5-haiku-20241022') })
+ * const handle = agent.run({}, {})
+ * const { state, signal } = await handle
+ * ```
+ */
 export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof Ctx>(
   id: string,
   h: Harness<Ctx, State, Req, Run>,

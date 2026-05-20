@@ -4,6 +4,13 @@ import type { SessionStore, StoredRun } from './session-store.js'
 // NoInterruptError
 // -----------------------------------------------------------------------
 
+/**
+ * Thrown by {@link RunHandle.resume} or {@link Agent.resume} when the session
+ * is not currently paused on a matching interrupt.
+ *
+ * Common causes: the run has not yet settled, the session does not exist,
+ * or the supplied `interruptId` does not match the pending interrupt.
+ */
 export class NoInterruptError extends Error {
   constructor() {
     super(
