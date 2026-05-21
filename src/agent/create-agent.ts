@@ -7,16 +7,24 @@ import {
 import { isRequiredMarker, isRuntimeMarker } from '../harness/ctx-markers.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { FieldDefinition } from '../harness/state-field.js'
-import type { SessionPhase } from './session-store.js'
+import type { SessionPhase, ClaimOptions, Lease } from './session-store.js'
 import { resolveSessionStore, runWithSession, querySessionPhase, type SessionRunOptions } from './session-lifecycle.js'
 import { runLoop } from '../loop/loop-executor.js'
 import { createRunHandle, type RunHandle, type RunOutcome } from './run-handle.js'
 import { NoInterruptError, injectInterruptResponse } from './interrupt-resume.js'
-import { SessionInFlightError, SessionPendingInterruptError } from './concurrency-errors.js'
+import {
+  SessionInFlightError,
+  SessionPendingInterruptError,
+  SessionBusyError,
+  LeaseExpiredError,
+  StoreLoadError,
+} from './concurrency-errors.js'
+import type { LeaseRef } from './ctx-keep-alive.js'
 import { randomUUID } from 'node:crypto'
 import { extractRunEvents } from './event-callbacks.js'
 import { extractRunListeners } from './ctx-emit.js'
 import type { Observer } from './observer.js'
+import { initializeState } from './session-store.js'
 
 // -----------------------------------------------------------------------
 // Module-level constants
@@ -32,6 +40,16 @@ function extractRunObserver(resources: Record<string, unknown>): Observer | unde
   const raw = resources['observer']
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   return raw as Observer // as: duck-typed plain object confirmed; methods not validated
+}
+
+/** Options passed to createAgent(). */
+export interface AgentOptions {
+  /**
+   * Stable identifier for the process or replica running this agent instance.
+   * Written to `StoredRun.metadata` on every save and propagated to observers
+   * via `RunContext.instanceId`.
+   */
+  readonly instanceId?: string
 }
 
 // -----------------------------------------------------------------------
@@ -51,7 +69,12 @@ export interface Agent {
    * Cross-process entry point for responding to a pending interrupt.
    * Returns a RunHandle synchronously; the execution promise performs the resume.
    */
-  resume(response: unknown, sessionId: string, interruptId: string): RunHandle
+  resume(
+    response: unknown,
+    sessionId: string,
+    interruptId: string,
+    options?: { events?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void } },
+  ): RunHandle
 
   /**
    * Query the session store for the current phase of a session.
@@ -188,6 +211,7 @@ type AgentWithInternals = Agent & {
  *   first argument to every store operation).
  * @param h - The harness produced by `createHarness()...loop()`.
  * @param slots - Values for every slot declared with `required()` in the harness.
+ * @param options - Optional agent-level options (e.g., instanceId).
  *
  * @throws {@link MissingLoopError} when `h.loop()` was never called.
  * @throws {@link MissingSlotError} when a `required()` slot is absent from `slots`.
@@ -205,6 +229,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   id: string,
   h: Harness<Ctx, State, Req, Run>,
   slots: Pick<Ctx, Req>,
+  agentOptions?: AgentOptions,
 ): Agent {
   // Get harness internals; propagate HarnessInternalsError if h is not a real Harness
   const internals: HarnessInternals<Ctx, State, Req, Run> = getInternals(h)
@@ -285,7 +310,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   }
 
   // Reserved keys are skipped during agent.run() resource validation
-  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners', 'observer'])
+  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners', 'observer', 'claimOptions'])
 
   // one per agent instance; tracks all session IDs currently executing
   const inFlightSessions = new Set<string>()
@@ -302,6 +327,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     resp: unknown,
     sId: string,
     iId: string,
+    resumeOpts?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void },
   ): RunHandle => {
     const flag = { stopped: false }
     const ref: { current: string | null } = { current: null }
@@ -309,30 +335,67 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
 
     const exec = (async (): Promise<RunOutcome> => {
       await Promise.resolve()
+      const claimOptions: ClaimOptions = { ttlMs: 30_000 }
+      let leaseRef: LeaseRef | undefined = undefined
       try {
-        if (capturedStore === undefined) throw new NoInterruptError()
-        await injectInterruptResponse(capturedStore, id, sId, iId, resp)
-        const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
-          ...Object.fromEntries(agentInternals.resolvedProviders),
-          agentId: id,
-          sessionId: sId,
+        if (typeof capturedStore?.claim === 'function') {
+          let lease: Lease | null
+          try {
+            lease = await capturedStore.claim(id, sId, claimOptions)
+          } catch (claimError: unknown) {
+            const loadError = new StoreLoadError(claimError)
+            resumeOpts?.onStoreError?.(loadError, 'claim')
+            const failState = initializeState(null, {}, agentInternals.stateSchema)
+            ;(failState as Record<string, unknown>)['$error'] = loadError
+            return { state: failState, signal: '$error' }
+          }
+          if (lease === null) {
+            const busyError = new SessionBusyError(sId)
+            resumeOpts?.onStoreError?.(busyError, 'claim')
+            const failState = initializeState(null, {}, agentInternals.stateSchema)
+            ;(failState as Record<string, unknown>)['$error'] = busyError
+            return { state: failState, signal: '$error' }
+          }
+          leaseRef = { current: lease }
         }
-        const r = await runWithSession(
-          capturedStore,
-          id,
-          sId,
-          rId,
-          agentInternals.loopDef,
-          {},
-          agentInternals.stateSchema,
-          agentCtx,
-          {
-            shouldStop: () => flag.stopped,
-            onBeforeStep: (n: string) => { ref.current = n }, // _state unused in cross-process resume — no events available
-          },
-        )
-        if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
-        return { state: r.state, signal: r.signal }
+        try {
+          if (capturedStore === undefined) throw new NoInterruptError()
+          await injectInterruptResponse(capturedStore, id, sId, iId, resp)
+          const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
+            ...Object.fromEntries(agentInternals.resolvedProviders),
+            agentId: id,
+            sessionId: sId,
+          }
+          const r = await runWithSession(
+            capturedStore,
+            id,
+            sId,
+            rId,
+            agentInternals.loopDef,
+            {},
+            agentInternals.stateSchema,
+            agentCtx,
+            {
+              shouldStop: () => flag.stopped,
+              onBeforeStep: (n: string) => { ref.current = n },
+              ...(resumeOpts?.onStoreError !== undefined ? { onStoreError: resumeOpts.onStoreError } : {}),
+              ...(leaseRef !== undefined ? { leaseRef, claimTtlMs: claimOptions.ttlMs } : {}),
+            },
+          )
+          if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
+          return { state: r.state, signal: r.signal }
+        } catch (error: unknown) {
+          if (error instanceof LeaseExpiredError) {
+            const failState = initializeState(null, {}, agentInternals.stateSchema)
+            ;(failState as Record<string, unknown>)['$error'] = error
+            return { state: failState, signal: '$error' }
+          }
+          throw error
+        } finally {
+          if (leaseRef !== undefined && typeof capturedStore?.release === 'function') {
+            try { await capturedStore.release(leaseRef.current!) } catch { /* swallow */ }
+          }
+        }
       } finally {
         inFlightSessions.delete(sId)
       }
@@ -409,6 +472,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...runtimeSlots,
         agentId: id,
         sessionId,
+        ...(agentOptions?.instanceId !== undefined ? { instanceId: agentOptions.instanceId } : {}),
       }
 
       // Extract event callbacks and listeners from resources (reserved keys)
@@ -437,6 +501,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
         ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
         ...(observer !== undefined ? { observer } : {}),
+        ...(agentOptions?.instanceId !== undefined ? { instanceId: agentOptions.instanceId } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -446,21 +511,69 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       const execution = (async (): Promise<RunOutcome> => {
         // Yield so agent.run() can return the RunHandle before any loop iteration starts
         await Promise.resolve()
+
+        // Parse claimOptions from resources (reserved key); default ttlMs=30_000
+        const rawClaimOpts = resources['claimOptions']
+        const claimOptions: ClaimOptions =
+          typeof rawClaimOpts === 'object' && rawClaimOpts !== null &&
+          typeof (rawClaimOpts as Record<string, unknown>)['ttlMs'] === 'number'
+            ? (rawClaimOpts as ClaimOptions)
+            : { ttlMs: 30_000 }
+
+        let leaseRef: LeaseRef | undefined = undefined
+
         try {
-          const r = await runWithSession(
-            capturedStore,
-            id,
-            sessionId,
-            runId,
-            agentInternals.loopDef,
-            initialState,
-            agentInternals.stateSchema,
-            ctx,
-            options,
-          )
-          if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
-          lastResult = { state: r.state, cursor: r.cursor }
-          return { state: r.state, signal: r.signal }
+          if (typeof capturedStore?.claim === 'function') {
+            let lease: Lease | null
+            try {
+              lease = await capturedStore.claim(id, sessionId, claimOptions)
+            } catch (claimError: unknown) {
+              const loadError = new StoreLoadError(claimError)
+              events.onStoreError?.(loadError, 'claim')
+              const failState = initializeState(null, initialState, agentInternals.stateSchema)
+              ;(failState as Record<string, unknown>)['$error'] = loadError
+              return { state: failState, signal: '$error' }
+            }
+            if (lease === null) {
+              const busyError = new SessionBusyError(sessionId)
+              events.onStoreError?.(busyError, 'claim')
+              const failState = initializeState(null, initialState, agentInternals.stateSchema)
+              ;(failState as Record<string, unknown>)['$error'] = busyError
+              return { state: failState, signal: '$error' }
+            }
+            leaseRef = { current: lease }
+          }
+          try {
+            const r = await runWithSession(
+              capturedStore,
+              id,
+              sessionId,
+              runId,
+              agentInternals.loopDef,
+              initialState,
+              agentInternals.stateSchema,
+              ctx,
+              {
+                ...options,
+                ...(leaseRef !== undefined ? { leaseRef, claimTtlMs: claimOptions.ttlMs } : {}),
+              },
+            )
+            if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
+            lastResult = { state: r.state, cursor: r.cursor }
+            return { state: r.state, signal: r.signal }
+          } catch (error: unknown) {
+            if (error instanceof LeaseExpiredError) {
+              // onStoreError already called by runWithSession before throwing
+              const failState = initializeState(null, initialState, agentInternals.stateSchema)
+              ;(failState as Record<string, unknown>)['$error'] = error
+              return { state: failState, signal: '$error' }
+            }
+            throw error
+          } finally {
+            if (leaseRef !== undefined && typeof capturedStore?.release === 'function') {
+              try { await capturedStore.release(leaseRef.current!) } catch { /* swallow */ }
+            }
+          }
         } finally {
           inFlightSessions.delete(sessionId)
         }
@@ -543,6 +656,14 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
               if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
               lastResult = { state: r.state, cursor: r.cursor }
               return { state: r.state, signal: r.signal }
+            } catch (error: unknown) {
+              if (error instanceof LeaseExpiredError) {
+                // onStoreError already called by runWithSession before throwing
+                const failState = initializeState(null, initialState, agentInternals.stateSchema)
+                ;(failState as Record<string, unknown>)['$error'] = error
+                return { state: failState, signal: '$error' }
+              }
+              throw error
             } finally {
               inFlightSessions.delete(sessionId)
             }
@@ -555,11 +676,19 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       return createRunHandle(sessionId, runId, execution, stopFlag, stepRef, buildResumeFn())
     },
 
-    resume: (response: unknown, sessionId: string, interruptId: string): RunHandle => {
+    resume: (
+      response: unknown,
+      sessionId: string,
+      interruptId: string,
+      resumeOptions?: { events?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void } },
+    ): RunHandle => {
       if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
       interruptPendingSessions.delete(sessionId)
       inFlightSessions.add(sessionId)
-      return makeAgentResumeHandle(response, sessionId, interruptId)
+      const resumeOpts = resumeOptions?.events?.onStoreError !== undefined
+        ? { onStoreError: resumeOptions.events.onStoreError }
+        : undefined
+      return makeAgentResumeHandle(response, sessionId, interruptId, resumeOpts)
     },
 
     status: (sessionId: string) => querySessionPhase(capturedStore, id, sessionId),

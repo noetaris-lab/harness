@@ -29,11 +29,12 @@ export interface RunEvents {
    */
   onInterrupt?: (prompt: unknown, interruptId: string) => void
   /**
-   * Called if the session store fails at load or persist phase.
+   * Called if the session store fails at load, persist, or claim phase.
    * phase: 'load' — store failed at run start (run never executed).
    * phase: 'persist' — store failed at run end (run completed but state not saved).
+   * phase: 'claim' — store.claim() returned null (busy) or threw (network error).
    */
-  onStoreError?: (error: unknown, phase: 'load' | 'persist') => void
+  onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void
 }
 
 /**

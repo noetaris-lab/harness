@@ -4,6 +4,11 @@
 export interface RunContext {
   readonly agentId: string
   readonly sessionId: string
+  /**
+   * The physical instance ID of the agent process, if configured via
+   * `createAgent()` options. Absent when `instanceId` was not provided.
+   */
+  readonly instanceId?: string
 }
 
 /**

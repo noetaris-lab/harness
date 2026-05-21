@@ -1,3 +1,5 @@
+import type { KeepAliveFn } from '../agent/ctx-keep-alive.js'
+
 // -----------------------------------------------------------------------
 // Framework-reserved state fields — readable in run/route, not writable from run return
 // -----------------------------------------------------------------------
@@ -41,6 +43,7 @@ export type RunFn<S, Ctx> = (
     readonly sessionId: string
     readonly interrupt: (prompt: unknown, id?: string) => Promise<unknown>
     readonly emit: (name: string, payload?: unknown) => void
+    readonly keepAlive: KeepAliveFn
   },
 ) => Promise<Partial<Omit<S, '$error' | '$interrupt'>>> | Partial<Omit<S, '$error' | '$interrupt'>>
 

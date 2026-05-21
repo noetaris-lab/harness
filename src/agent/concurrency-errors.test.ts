@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { SessionInFlightError, SessionPendingInterruptError, StoreLoadError } from './concurrency-errors.js'
+import {
+  SessionInFlightError,
+  SessionPendingInterruptError,
+  StoreLoadError,
+  SessionBusyError,
+  LeaseExpiredError,
+} from './concurrency-errors.js'
 
 describe('SessionInFlightError', () => {
 
@@ -51,6 +57,54 @@ describe('StoreLoadError', () => {
 
     // assert
     expect(error.cause).toBe('connection refused')
+  })
+
+})
+
+// -----------------------------------------------------------------------
+// Group 1: SessionBusyError construction
+// -----------------------------------------------------------------------
+
+describe('SessionBusyError', () => {
+
+  it('sets sessionId, name, message, and retryAfter when constructed with retryAfter', () => {
+    // arrange / act
+    const error = new SessionBusyError('sess-42', 1700000000000)
+
+    // assert
+    expect(error.sessionId).toBe('sess-42')
+    expect(error.retryAfter).toBe(1700000000000)
+    expect(error.name).toBe('SessionBusyError')
+    expect(error.message).toContain('sess-42')
+  })
+
+  it('omits retryAfter property entirely when constructed without retryAfter', () => {
+    // arrange / act
+    const error = new SessionBusyError('sess-99')
+
+    // assert
+    expect(error.retryAfter).toBeUndefined()
+    expect('retryAfter' in error).toBe(false)
+    expect(error.sessionId).toBe('sess-99')
+  })
+
+})
+
+// -----------------------------------------------------------------------
+// Group 2: LeaseExpiredError construction
+// -----------------------------------------------------------------------
+
+describe('LeaseExpiredError', () => {
+
+  it('sets sessionId, name, and message containing sessionId and "expired" when constructed', () => {
+    // arrange / act
+    const error = new LeaseExpiredError('abc')
+
+    // assert
+    expect(error.sessionId).toBe('abc')
+    expect(error.name).toBe('LeaseExpiredError')
+    expect(error.message).toContain('abc')
+    expect(error.message).toContain('expired')
   })
 
 })

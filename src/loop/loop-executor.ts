@@ -109,7 +109,11 @@ export async function runLoop(
   if (!('$interruptResponses' in state)) state.$interruptResponses = {}
 
   const runStart = Date.now()
-  const runCtx: RunContext = { agentId: ctx.agentId, sessionId: ctx.sessionId }
+  const runCtx: RunContext = {
+    agentId: ctx.agentId,
+    sessionId: ctx.sessionId,
+    ...(typeof ctx.instanceId === 'string' ? { instanceId: ctx.instanceId } : {}),
+  }
   obs?.onRunStart?.(runCtx)
 
   // callCountRef is shared between createInterruptFn and the per-step reset below

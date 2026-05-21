@@ -7,11 +7,13 @@ import type { Observer } from './observer.js'
 import {
   type SessionStore,
   type StoredRun,
+  type StoredRunMetadata,
   type SessionPhase,
   initializeState,
   storedSessionToPhase,
 } from './session-store.js'
-import { StoreLoadError } from './concurrency-errors.js'
+import { StoreLoadError, LeaseExpiredError } from './concurrency-errors.js'
+import { createKeepAliveFn, type LeaseRef } from './ctx-keep-alive.js'
 
 // -----------------------------------------------------------------------
 // SessionRunOptions — optional parameters for runWithSession
@@ -21,10 +23,11 @@ export interface SessionRunOptions {
   /** Checked at the top of each loop iteration; returning true halts the run. */
   readonly shouldStop?: () => boolean
   /**
-   * Called if the session store fails. `phase` is `'load'` (store failed at run start)
-   * or `'persist'` (store failed at run end/pause). Run result is still returned.
+   * Called if the session store fails. `phase` is `'load'` (store failed at run start),
+   * `'persist'` (store failed at run end/pause), or `'claim'` (claim returned null or threw).
+   * Run result is still returned when phase is 'persist'.
    */
-  readonly onStoreError?: (error: unknown, phase: 'load' | 'persist') => void
+  readonly onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void
   /** Called just before each step executes. Used by RunHandle to track currentStep and fire onBeforeStep. */
   readonly onBeforeStep?: (name: string, state: Record<string, unknown>) => void
   /** Called after a step's run completes successfully and applyUpdate has been applied. */
@@ -39,6 +42,21 @@ export interface SessionRunOptions {
   readonly listeners?: Record<string, (payload: unknown) => void>
   /** Structured telemetry observer for this run. All methods optional. F16b. */
   readonly observer?: Observer
+  /**
+   * Active lease reference. The factory closes over this ref; it is updated
+   * in-place by `extendClaim()` calls. Absent when no claim is in use.
+   */
+  readonly leaseRef?: LeaseRef
+  /**
+   * The `instanceId` from `AgentOptions`, if provided. Written into
+   * `StoredRun.metadata` on every terminal save and into `RunContext` for observers.
+   */
+  readonly instanceId?: string
+  /**
+   * The original claim `ttlMs` — passed to `createKeepAliveFn` as `originalTtlMs`
+   * so `ctx.keepAlive()` uses the same TTL for renewals. Defaults to 30_000 when absent.
+   */
+  readonly claimTtlMs?: number
 }
 
 // -----------------------------------------------------------------------
@@ -104,9 +122,31 @@ export async function runWithSession(
   ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string },
   options?: SessionRunOptions,
 ): Promise<LoopResult> {
+  // Inject keepAlive into ctx — no-op when no lease is active (leaseRef.current === null)
+  const leaseRef = options?.leaseRef ?? { current: null }
+  const keepAlive = createKeepAliveFn(leaseRef, store, options?.claimTtlMs ?? 30_000)
+  ;(ctx as Record<string, unknown>)['keepAlive'] = keepAlive // mutate in-place like runLoop does for interrupt/emit
+
+  // Build composedShouldStop — checks caller predicate AND lease expiry
+  let leaseExpired = false
+  const composedShouldStop = (): boolean => {
+    if (options?.shouldStop?.() === true) return true
+    if (leaseRef.current !== null && leaseRef.current.expiresAt <= Date.now()) {
+      leaseExpired = true
+      return true
+    }
+    return false
+  }
+
   if (store === undefined) {
     const state = initializeState(null, initialStateArg, schema)
-    return runLoop(graph, state, ctx, schema, options?.shouldStop, undefined, options)
+    const result = await runLoop(graph, state, ctx, schema, composedShouldStop, undefined, options)
+    if (leaseExpired) {
+      const expiredError = new LeaseExpiredError(sessionId)
+      options?.onStoreError?.(expiredError, 'claim')
+      throw expiredError
+    }
+    return result
   }
 
   // Load phase — on failure: fire onStoreError('load') and return synthetic error result
@@ -128,10 +168,21 @@ export async function runWithSession(
   const initialStateSnapshot = { ...state }
   const startedAt = new Date().toISOString()
 
-  // Execute — errors from runLoop propagate uncaught
-  const result = await runLoop(graph, state, ctx, schema, options?.shouldStop, loaded?.step, options)
+  // Execute — errors from runLoop propagate uncaught (except LeaseExpiredError handled below)
+  const result = await runLoop(graph, state, ctx, schema, composedShouldStop, loaded?.step, options)
+
+  // Lease-expired path — do NOT persist; signal error to caller
+  if (leaseExpired) {
+    const expiredError = new LeaseExpiredError(sessionId)
+    options?.onStoreError?.(expiredError, 'claim')
+    throw expiredError
+  }
 
   const settledAt = new Date().toISOString()
+
+  // Build optional metadata
+  const metadata: StoredRunMetadata | undefined =
+    options?.instanceId !== undefined ? { instanceId: options.instanceId } : undefined
 
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {
@@ -149,6 +200,7 @@ export async function runWithSession(
         finalState: result.state,
         step: result.cursor!,
         ...(result.signal !== null ? { signal: result.signal } : {}),
+        ...(metadata !== undefined ? { metadata } : {}),
       }
       await store.save(agentId, sessionId, saved)
     } else {
@@ -163,6 +215,7 @@ export async function runWithSession(
         initialState: initialStateSnapshot,
         finalState: result.state,
         ...(result.signal !== null ? { signal: result.signal } : {}),
+        ...(metadata !== undefined ? { metadata } : {}),
       }
       await store.save(agentId, sessionId, saved)
     }

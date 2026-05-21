@@ -6,6 +6,79 @@ type SchemaLike = Record<string, {
 }>
 
 // -----------------------------------------------------------------------
+// ClaimOptions — lease duration passed to claim() and extendClaim()
+// -----------------------------------------------------------------------
+
+/**
+ * Options passed to {@link SessionStore.claim}.
+ *
+ * `ttlMs` is the initial lease duration in milliseconds. The claim expires
+ * if not renewed within this window — enabling crash recovery by other instances.
+ */
+export interface ClaimOptions {
+  /** Lease duration in milliseconds. Must be a positive integer. */
+  readonly ttlMs: number
+}
+
+// -----------------------------------------------------------------------
+// Lease — distributed lease handle returned by claim() and extendClaim()
+// -----------------------------------------------------------------------
+
+/**
+ * A successfully acquired distributed lease on a session.
+ *
+ * Returned by {@link SessionStore.claim} when no other instance holds the
+ * session. The framework holds this object for the duration of the run and
+ * passes it to {@link SessionStore.release} and {@link SessionStore.extendClaim}.
+ */
+export interface Lease {
+  /**
+   * Wall-clock expiry timestamp (milliseconds since epoch).
+   * The framework checks `Date.now() >= lease.expiresAt` at each step boundary
+   * to detect TTL expiry without contacting the store.
+   */
+  readonly expiresAt: number
+  /**
+   * The `agentId` this lease was issued for.
+   * Stored in the claim record for stuck-lease diagnosis.
+   */
+  readonly agentId: string
+  /**
+   * The `sessionId` this lease covers.
+   */
+  readonly sessionId: string
+  /**
+   * The `instanceId` of the holder, if provided to `createAgent()`.
+   * Written into the store's claim record for operational diagnostics.
+   * Absent when `instanceId` was not configured.
+   */
+  readonly instanceId?: string
+  /**
+   * Store-implementation-specific token — e.g. a Redis key name, a lock token,
+   * or a database row ID. Opaque to the framework; passed back unmodified on
+   * `release` and `extendClaim` calls so the store can locate the record.
+   */
+  readonly token: unknown
+}
+
+// -----------------------------------------------------------------------
+// StoredRunMetadata — operational metadata written into StoredRun
+// -----------------------------------------------------------------------
+
+/**
+ * Operational metadata written by the framework into every {@link StoredRun}.
+ *
+ * The framework writes only `instanceId`. All other fields are reserved for
+ * domain-specific operational annotations (tenantId, region, requestId, etc.).
+ */
+export interface StoredRunMetadata {
+  /** The `instanceId` of the instance that produced this run. Absent when not configured. */
+  instanceId?: string
+  /** Open extension point — domain-specific fields. */
+  [key: string]: unknown
+}
+
+// -----------------------------------------------------------------------
 // SessionStore — the persistence contract
 // -----------------------------------------------------------------------
 
@@ -52,6 +125,41 @@ export interface SessionStore {
    * @throws {@link BranchNotFoundError} when `runId` is not found in history.
    */
   branch?(agentId: string, sessionId: string, runId: string): Promise<string>
+
+  /**
+   * Attempt to acquire a distributed claim on the session before starting a run.
+   *
+   * - Returns a {@link Lease} when the claim is acquired.
+   * - Returns `null` when another instance already holds the claim — the framework
+   *   throws {@link SessionBusyError} immediately without starting any LLM work.
+   *
+   * Optional — stores that do not support distributed locking omit this method.
+   * The framework checks for its presence before calling it.
+   */
+  claim?(agentId: string, sessionId: string, options: ClaimOptions): Promise<Lease | null>
+
+  /**
+   * Release a held claim after the run settles.
+   *
+   * Called by the framework after `save()` completes (or after an error that
+   * prevents saving). Stores may use this to remove the lock record immediately
+   * rather than waiting for TTL expiry.
+   *
+   * Optional — omit if your store does not support claim/release.
+   */
+  release?(lease: Lease): Promise<void>
+
+  /**
+   * Extend the TTL of an active claim.
+   *
+   * Called by `ctx.keepAlive()` (both one-shot and background interval modes).
+   * The store must update `expiresAt` on the claim record; the new expiry is
+   * `Date.now() + options.ttlMs`. The returned `Lease` object carries the updated
+   * `expiresAt`; the framework replaces its held reference with the returned value.
+   *
+   * Optional — omit if your store does not support claim/release.
+   */
+  extendClaim?(lease: Lease, options: ClaimOptions): Promise<Lease>
 }
 
 // -----------------------------------------------------------------------
@@ -79,6 +187,13 @@ export interface StoredRun {
   readonly finalState: Record<string, unknown>
   readonly signal?: string
   readonly step?: string
+  /**
+   * Operational metadata written by the framework.
+   *
+   * The framework writes `instanceId` when configured; all other fields are
+   * domain-defined. Absent for runs produced before this field was added.
+   */
+  readonly metadata?: StoredRunMetadata
 }
 
 // -----------------------------------------------------------------------

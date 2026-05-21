@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { composeObservers, type RunContext, type StepContext } from './observer.js'
+import { composeObservers, type RunContext, type StepContext, type Observer } from './observer.js'
 
 describe('composeObservers', () => {
 
@@ -278,6 +278,40 @@ describe('composeObservers', () => {
       expect(obsA).toEqual({ onRunStart: expect.any(Function) })
     })
 
+  })
+
+})
+
+// -----------------------------------------------------------------------
+// Group 4: RunContext instanceId field
+// -----------------------------------------------------------------------
+
+describe('RunContext — instanceId field', () => {
+
+  it('observer receives instanceId when RunContext carries instanceId', () => {
+    // arrange
+    const ctx: RunContext = { agentId: 'ag-1', sessionId: 'sess-1', instanceId: 'pod-1' }
+    let captured: string | undefined
+    const obs: Observer = { onRunStart: (c: RunContext) => { captured = c.instanceId } }
+
+    // act
+    obs.onRunStart!(ctx)
+
+    // assert
+    expect(captured).toBe('pod-1')
+  })
+
+  it('observer receives undefined instanceId when RunContext omits instanceId', () => {
+    // arrange
+    const ctx: RunContext = { agentId: 'ag-2', sessionId: 'sess-2' }
+    let captured: string | undefined
+    const obs: Observer = { onRunStart: (c: RunContext) => { captured = c.instanceId } }
+
+    // act
+    obs.onRunStart!(ctx)
+
+    // assert
+    expect(captured).toBeUndefined()
   })
 
 })

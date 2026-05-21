@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   storedSessionToPhase,
   initializeState,
 } from './session-store.js'
-import type { StoredRun } from './session-store.js'
+import type { StoredRun, SessionStore, StoredRunMetadata, Lease } from './session-store.js'
 
 // -----------------------------------------------------------------------
 // Helper — builds a minimal valid StoredRun with required fields
@@ -331,6 +331,149 @@ describe('session-store', () => {
 
       // assert
       expect(result).toEqual({})
+    })
+
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 3: StoredRun metadata field
+  // -----------------------------------------------------------------------
+
+  describe('StoredRun — metadata field', () => {
+
+    it('reads metadata.instanceId when StoredRun is constructed with metadata', () => {
+      // arrange
+      const run: StoredRun = {
+        agentId: 'a', runId: 'r1', sessionId: 's1', version: 0,
+        startedAt: '2026-01-01T00:00:00Z', settledAt: '2026-01-01T00:00:01Z',
+        phase: 'completed',
+        initialState: {}, finalState: {},
+        metadata: { instanceId: 'pod-1' },
+      }
+
+      // act
+      const result = run.metadata?.instanceId
+
+      // assert
+      expect(result).toBe('pod-1')
+    })
+
+    it('returns undefined for metadata when StoredRun is constructed without metadata', () => {
+      // arrange
+      const run: StoredRun = {
+        agentId: 'a', runId: 'r2', sessionId: 's2', version: 0,
+        startedAt: '2026-01-01T00:00:00Z', settledAt: '2026-01-01T00:00:01Z',
+        phase: 'completed',
+        initialState: {}, finalState: {},
+      }
+
+      // act
+      const result = run.metadata
+
+      // assert
+      expect(result).toBeUndefined()
+    })
+
+    it('reads domain field on StoredRunMetadata by value', () => {
+      // arrange
+      const meta: StoredRunMetadata = { instanceId: 'pod-1', tenantId: 'acme' }
+
+      // act
+      const tenant = meta['tenantId']
+
+      // assert
+      expect(tenant).toBe('acme')
+      expect(meta.instanceId).toBe('pod-1')
+    })
+
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 5: Optional SessionStore method detection
+  // -----------------------------------------------------------------------
+
+  describe('SessionStore — optional method detection', () => {
+
+    function makeMinimalStore(): SessionStore {
+      return {
+        load: vi.fn().mockResolvedValue(null),
+        save: vi.fn().mockResolvedValue(undefined),
+      }
+    }
+
+    let store: SessionStore
+
+    beforeEach(() => {
+      store = makeMinimalStore()
+    })
+
+    it('returns false for typeof store.claim === "function" when store omits claim', () => {
+      // arrange — store has no claim method
+
+      // act
+      const result = typeof store.claim === 'function'
+
+      // assert
+      expect(result).toBe(false)
+    })
+
+    it('returns false for typeof store.release === "function" when store omits release', () => {
+      // arrange — store has no release method
+
+      // act
+      const result = typeof store.release === 'function'
+
+      // assert
+      expect(result).toBe(false)
+    })
+
+    it('returns false for typeof store.extendClaim === "function" when store omits extendClaim', () => {
+      // arrange — store has no extendClaim method
+
+      // act
+      const result = typeof store.extendClaim === 'function'
+
+      // assert
+      expect(result).toBe(false)
+    })
+
+  })
+
+  // -----------------------------------------------------------------------
+  // Group 6: Lease reference replacement after extendClaim
+  // -----------------------------------------------------------------------
+
+  describe('Lease — reference replacement after extendClaim', () => {
+
+    it('replaces held lease reference with updated expiresAt after extendClaim resolves', async () => {
+      // arrange
+      const initialLease: Lease = {
+        expiresAt: 1700000000000,
+        agentId: 'ag-1',
+        sessionId: 'sess-1',
+        token: 'tok-abc',
+      }
+      const renewedLease: Lease = {
+        expiresAt: 1700000060000, // +60 s
+        agentId: 'ag-1',
+        sessionId: 'sess-1',
+        token: 'tok-abc',
+      }
+      const store: SessionStore = {
+        load: vi.fn().mockResolvedValue(null),
+        save: vi.fn().mockResolvedValue(undefined),
+        extendClaim: vi.fn().mockResolvedValue(renewedLease),
+      }
+      let heldLease: Lease = initialLease
+
+      // act
+      // store.extendClaim! is safe — the store was constructed with that method above
+      heldLease = await store.extendClaim!(heldLease, { ttlMs: 60_000 })
+
+      // assert
+      expect(heldLease.expiresAt).toBe(1700000060000)
+      expect(heldLease.expiresAt).toBeGreaterThan(initialLease.expiresAt)
+      expect(store.extendClaim).toHaveBeenCalledWith(initialLease, { ttlMs: 60_000 })
     })
 
   })
