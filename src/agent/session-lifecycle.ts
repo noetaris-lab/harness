@@ -135,11 +135,13 @@ export async function runWithSession(
 
   // Terminal save — errors are swallowed; LoopResult is always returned
   try {
+    const version = (loaded?.version ?? -1) + 1
     if (result.paused) {
       const saved: StoredRun = {
         agentId,
         runId,
         sessionId,
+        version,
         startedAt,
         settledAt,
         phase: 'paused',
@@ -154,6 +156,7 @@ export async function runWithSession(
         agentId,
         runId,
         sessionId,
+        version,
         startedAt,
         settledAt,
         phase: 'completed',

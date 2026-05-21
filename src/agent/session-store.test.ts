@@ -14,6 +14,7 @@ function makeStoredRun(overrides: Partial<StoredRun> & { phase: StoredRun['phase
     agentId: 'a1',
     runId: 'r1',
     sessionId: 's1',
+    version: 0,
     startedAt: '2026-01-01T00:00:00Z',
     settledAt: '2026-01-01T00:01:00Z',
     initialState: {},

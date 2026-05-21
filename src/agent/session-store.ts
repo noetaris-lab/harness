@@ -26,7 +26,16 @@ export interface SessionStore {
    */
   load(agentId: string, sessionId: string): Promise<StoredRun | null>
 
-  /** Persist a run record, overwriting any previous record for the same session. */
+  /**
+   * Persist a run record as a conditional write.
+   *
+   * Implementations must compare `run.version` against the version of the
+   * currently stored record before writing:
+   * - If the stored version equals `run.version - 1` (or there is no stored
+   *   record and `run.version === 0`), the write succeeds.
+   * - Otherwise, another writer committed a newer version concurrently — the
+   *   implementation must throw `ConcurrentModificationError`.
+   */
   save(agentId: string, sessionId: string, run: StoredRun): Promise<void>
 
   /**
@@ -62,6 +71,7 @@ export interface StoredRun {
   readonly agentId: string
   readonly runId: string
   readonly sessionId: string
+  readonly version: number
   readonly startedAt: string
   readonly settledAt: string
   readonly phase: 'paused' | 'completed'

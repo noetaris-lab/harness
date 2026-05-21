@@ -52,6 +52,7 @@ export async function injectInterruptResponse(
     agentId: loaded.agentId,
     runId: loaded.runId,
     sessionId: loaded.sessionId,
+    version: loaded.version + 1,
     startedAt: loaded.startedAt,
     settledAt: loaded.settledAt,
     phase: 'paused',

@@ -43,3 +43,4 @@ export class StoreLoadError extends Error {
     this.cause = cause
   }
 }
+

@@ -26,6 +26,7 @@ function makeStoredRun(overrides: Partial<StoredRun> & Pick<StoredRun, 'phase'>)
     agentId: 'test-agent',
     runId: 'default-run-id',
     sessionId: 'default-session-id',
+    version: 0,
     startedAt: '2026-01-01T00:00:00.000Z',
     settledAt: '2026-01-01T00:01:00.000Z',
     initialState: {},
@@ -79,6 +80,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -120,6 +122,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -153,6 +156,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -199,6 +203,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'completed',
@@ -221,6 +226,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -245,6 +251,7 @@ describe('injectInterruptResponse', () => {
         agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-abc',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -465,8 +472,10 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
     store.load
       .mockResolvedValueOnce({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-sync',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -476,8 +485,10 @@ describe('agent.resume() success path', () => {
         finalState: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
       })
       .mockResolvedValueOnce({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-sync',
+        version: 1,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -521,8 +532,10 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
 
     const pausedSession = {
+      agentId: 'test-agent',
       runId: 'r1',
       sessionId: 'sess-twoload',
+      version: 0,
       startedAt: '2026-01-01T00:00:00Z',
       settledAt: '2026-01-01T00:01:00Z',
       phase: 'paused' as const,
@@ -538,6 +551,7 @@ describe('agent.resume() success path', () => {
     store.load.mockResolvedValueOnce(pausedSession)
     store.load.mockResolvedValueOnce({
       ...pausedSession,
+      version: 1,
       finalState: { $interrupt: null, $interruptResponses: { q1: 'Alice' }, name: null },
     })
     store.save.mockResolvedValue(undefined)
@@ -581,8 +595,10 @@ describe('agent.resume() success path', () => {
     const store = makeStubStore()
     store.load
       .mockResolvedValueOnce({
+        agentId: 'test-agent',
         runId: 'r1',
         sessionId: 'sess-chain',
+        version: 0,
         startedAt: '2026-01-01T00:00:00Z',
         settledAt: '2026-01-01T00:01:00Z',
         phase: 'paused',
@@ -595,8 +611,10 @@ describe('agent.resume() success path', () => {
         },
       })
       .mockResolvedValueOnce({
+        agentId: 'test-agent',
         runId: 'r2',
         sessionId: 'sess-chain',
+        version: 1,
         startedAt: '2026-01-01T00:02:00Z',
         settledAt: '2026-01-01T00:03:00Z',
         phase: 'paused',
@@ -650,8 +668,10 @@ describe('agent.resume() ctx isolation', () => {
 
     const store = makeStubStore()
     store.load.mockResolvedValueOnce({
+      agentId: 'test-agent',
       runId: 'r1',
       sessionId: 'sess-ctx',
+      version: 0,
       startedAt: '2026-01-01T00:00:00.000Z',
       settledAt: '2026-01-01T00:01:00.000Z',
       phase: 'paused',
@@ -661,8 +681,10 @@ describe('agent.resume() ctx isolation', () => {
       finalState: { $interrupt: { interruptId: 'q1', prompt: '?' }, $interruptResponses: {} },
     })
     store.load.mockResolvedValueOnce({
+      agentId: 'test-agent',
       runId: 'r2',
       sessionId: 'sess-ctx',
+      version: 1,
       startedAt: '2026-01-01T00:02:00.000Z',
       settledAt: '2026-01-01T00:03:00.000Z',
       phase: 'paused',
@@ -790,6 +812,7 @@ describe('injectInterruptResponse — successful injection', () => {
       agentId: 'test-agent',
       runId: 'run-preserve-me',
       sessionId: 'sid-preserve-me',
+      version: 2,
       startedAt: '2026-01-01T00:00:00.000Z',
       settledAt: '2026-01-01T00:05:00.000Z',
       phase: 'paused',

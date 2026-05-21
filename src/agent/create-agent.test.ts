@@ -1367,6 +1367,7 @@ describe('createAgent', () => {
           agentId: 'test-agent',
           sessionId: 'sess-1',
           runId: 'run-1',
+          version: 0,
           phase: 'paused',
           startedAt: new Date().toISOString(),
           settledAt: new Date().toISOString(),
