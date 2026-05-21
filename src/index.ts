@@ -35,7 +35,7 @@ export {
   createAgent,
   type Agent,
 } from './agent/create-agent.js'
-export { type SessionStore, type StoredRun } from './agent/session-store.js'
+export { type SessionStore, type StoredRun, type ClaimOptions, type Lease, type StoredRunMetadata } from './agent/session-store.js'
 export { NoInterruptError } from './agent/interrupt-resume.js'
 export { SessionInFlightError, SessionPendingInterruptError, StoreLoadError } from './agent/concurrency-errors.js'
 export {
