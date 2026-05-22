@@ -57,6 +57,12 @@ export interface SessionRunOptions {
    * so `ctx.keepAlive()` uses the same TTL for renewals. Defaults to 30_000 when absent.
    */
   readonly claimTtlMs?: number
+  /**
+   * Optional parent run UUID — set when parentRunId was passed as a resource
+   * to agent.run(). Threaded through to RunContext for cross-process trace
+   * correlation. Absent for top-level runs.
+   */
+  readonly parentRunId?: string
 }
 
 // -----------------------------------------------------------------------
@@ -140,7 +146,11 @@ export async function runWithSession(
 
   if (store === undefined) {
     const state = initializeState(null, initialStateArg, schema)
-    const result = await runLoop(graph, state, ctx, schema, composedShouldStop, undefined, options)
+    const result = await runLoop(graph, state, ctx, schema, composedShouldStop, undefined, {
+      ...options,
+      runId,
+      ...(options?.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
+    })
     if (leaseExpired) {
       const expiredError = new LeaseExpiredError(sessionId)
       options?.onStoreError?.(expiredError, 'claim')
@@ -162,6 +172,16 @@ export async function runWithSession(
     return { state: failState, signal: '$error', paused: false, cursor: null }
   }
 
+  // Short-circuit for completed sessions — return stored result immediately without executing
+  if (loaded !== null && loaded.phase === 'completed') {
+    return {
+      state: loaded.finalState,
+      signal: loaded.signal ?? null,
+      cursor: null,
+      paused: false,
+    }
+  }
+
   // Merge stored snapshot (or null for fresh) with caller-supplied initial state
   const state = initializeState(loaded, initialStateArg, schema)
   // Snapshot before runLoop — runLoop mutates state in place so we must copy before execution
@@ -169,7 +189,11 @@ export async function runWithSession(
   const startedAt = new Date().toISOString()
 
   // Execute — errors from runLoop propagate uncaught (except LeaseExpiredError handled below)
-  const result = await runLoop(graph, state, ctx, schema, composedShouldStop, loaded?.step, options)
+  const result = await runLoop(graph, state, ctx, schema, composedShouldStop, loaded?.step, {
+    ...options,
+    runId,
+    ...(options?.parentRunId !== undefined ? { parentRunId: options.parentRunId } : {}),
+  })
 
   // Lease-expired path — do NOT persist; signal error to caller
   if (leaseExpired) {

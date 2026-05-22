@@ -88,6 +88,16 @@ export interface LoopCallbacks {
   listeners?: Record<string, (payload: unknown) => void>
   /** Observer for structured telemetry. All lifecycle methods are optional. F16b. */
   observer?: Observer
+  /**
+   * The UUID for this specific invocation. Included in RunContext for observer
+   * methods. Absent when no observer is active (observer is still consistent).
+   */
+  runId?: string
+  /**
+   * Optional parent run UUID for cross-process trace correlation.
+   * Included in RunContext when provided.
+   */
+  parentRunId?: string
 }
 
 export async function runLoop(
@@ -112,6 +122,8 @@ export async function runLoop(
   const runCtx: RunContext = {
     agentId: ctx.agentId,
     sessionId: ctx.sessionId,
+    runId: typeof callbacks?.runId === 'string' ? callbacks.runId : '',
+    ...(typeof callbacks?.parentRunId === 'string' ? { parentRunId: callbacks.parentRunId } : {}),
     ...(typeof ctx.instanceId === 'string' ? { instanceId: ctx.instanceId } : {}),
   }
   obs?.onRunStart?.(runCtx)

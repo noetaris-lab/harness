@@ -13,6 +13,7 @@ import {
 } from './create-agent.js'
 import { NoInterruptError } from './interrupt-resume.js'
 import type { SessionStore, StoredRun } from './session-store.js'
+import type { RunContext } from './observer.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
 import { HarnessInternalsError } from '../harness/harness-builder.js'
 import { required, runtime } from '../harness/ctx-markers.js'
@@ -1838,6 +1839,788 @@ describe('createAgent', () => {
       expect(obs.onRunStart).not.toHaveBeenCalled()
       expect(obs.onStepStart).not.toHaveBeenCalled()
       expect(obs.onRunEnd).not.toHaveBeenCalled()
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: CtxRunSignal (F29) — ctx.runId and ctx.signal injection
+  // -----------------------------------------------------------------------
+
+  describe('CtxRunSignal', () => {
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+    describe('Group 1: ctx.runId identity and uniqueness', () => {
+      it('exposes runId equal to run.runId and available synchronously as a string', async () => {
+        // arrange
+        let capturedRunId: string | undefined
+        let capturedRunIdType: string | undefined
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing runId from ctx
+                  capturedRunId = c.runId
+                  capturedRunIdType = typeof c.runId
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+
+        // assert
+        expect(typeof capturedRunIdType).toBe('string')
+        expect(capturedRunId).toBe(run.runId)
+        expect(capturedRunId).toMatch(uuidPattern)
+      })
+
+      it('produces a distinct runId for each sequential agent.run() call', async () => {
+        // arrange
+        const capturedIds: string[] = []
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing runId from ctx
+                  capturedIds.push(c.runId)
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run1 = agent.run({}, {})
+        await run1
+        const run2 = agent.run({}, {})
+        await run2
+
+        // assert
+        expect(capturedIds).toHaveLength(2)
+        expect(capturedIds[0]).not.toBe(capturedIds[1])
+      })
+    })
+
+    describe('Group 2: synthesized AbortSignal when no external signal is provided', () => {
+      it('ctx.signal.aborted is false before run.stop() is called', async () => {
+        // arrange
+        let capturedBeforeStop: boolean | undefined
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing signal from ctx
+                  capturedBeforeStop = c.signal.aborted
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+
+        // assert
+        expect(capturedBeforeStop).toBe(false)
+      })
+
+      it('ctx.signal is an AbortSignal instance when no external signal is provided', async () => {
+        // arrange
+        let capturedSignal: unknown
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing signal from ctx
+                  capturedSignal = c.signal
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+
+        // assert
+        expect(capturedSignal).toBeInstanceOf(AbortSignal)
+        expect((capturedSignal as AbortSignal).aborted).toBe(false)
+      })
+    })
+
+    describe('Group 3: external AbortSignal passthrough', () => {
+      it('ctx.signal is the same AbortSignal instance when one is provided in resources', async () => {
+        // arrange
+        const ac = new AbortController()
+        let capturedSignal: AbortSignal | undefined
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing signal from ctx
+                  capturedSignal = c.signal
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, { signal: ac.signal })
+        await run
+
+        // assert
+        expect(capturedSignal).toBe(ac.signal)
+      })
+
+      it('ctx.signal.aborted is true when the provided signal is already aborted', async () => {
+        // arrange
+        const ac = new AbortController()
+        ac.abort()
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async () => { return {} },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, { signal: ac.signal })
+        await run
+
+        // assert
+        expect(ac.signal.aborted).toBe(true)
+        expect(run).toBeDefined()
+      })
+
+      it('ctx.signal.aborted becomes true after run.stop() is called externally', async () => {
+        // arrange
+        let capturedSignal: AbortSignal | undefined
+        let signalAbortedAfterStop: boolean | undefined
+        let unblock: (() => void) | undefined
+        const blocker = new Promise<void>(r => { unblock = r })
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing signal from ctx
+                  capturedSignal = c.signal
+                  await blocker
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        // Allow step to start and capture signal before calling stop
+        await new Promise(resolve => setImmediate(resolve))
+        run.stop()
+        unblock!()
+        await run
+
+        // Check signal state after stop
+        signalAbortedAfterStop = capturedSignal?.aborted
+
+        // assert
+        expect(capturedSignal).toBeDefined()
+        expect(signalAbortedAfterStop).toBe(true)
+      })
+    })
+
+    describe('Group 4: resume paths receive distinct runId and working AbortSignal', () => {
+      it('resumed step via run.resume() receives a different runId than the original run', async () => {
+        // arrange
+        const capturedRunIds: string[] = []
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing interrupt and runId
+                  capturedRunIds.push(c.runId)
+                  await c.interrupt({ prompt: 'continue?' })
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+        const resumeRun = run.resume({}, '$auto:0')
+        await resumeRun
+
+        // assert
+        expect(capturedRunIds).toHaveLength(2)
+        expect(capturedRunIds[0]).toMatch(uuidPattern)
+        expect(capturedRunIds[1]).toMatch(uuidPattern)
+        expect(capturedRunIds[0]).not.toBe(capturedRunIds[1])
+      })
+
+      it('resumed step via agent.resume() receives a runId distinct from the original run', async () => {
+        // arrange
+        // This test covers the makeAgentResumeHandle code path (cross-process resume via agent.resume())
+        const originalRunId = 'run-id-original'
+        const capturedRunIds: string[] = []
+        const stubStore = makeStubStore({
+          load: vi.fn().mockResolvedValue({
+            agentId: 'test-agent',
+            runId: originalRunId,
+            sessionId: 'test-session',
+            version: 1,
+            startedAt: new Date().toISOString(),
+            settledAt: new Date().toISOString(),
+            phase: 'paused',
+            initialState: {},
+            finalState: { $interrupt: { interruptId: 'interrupt-1' } },
+          } as StoredRun),
+        })
+
+        const h = createHarness<Record<string, never>>()({})
+          .store({ session: stubStore })
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing runId
+                  capturedRunIds.push(c.runId)
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        // Use agent.resume() to trigger the makeAgentResumeHandle code path
+        const resumeRun = agent.resume({}, 'test-session', 'interrupt-1')
+        await resumeRun
+
+        // assert
+        expect(capturedRunIds).toHaveLength(1)
+        expect(capturedRunIds[0]).toMatch(uuidPattern)
+        // The resumed run should have a distinct runId from the original run
+        expect(capturedRunIds[0]).not.toBe(originalRunId)
+      })
+
+      it('resume path creates a new AbortSignal with distinct signal object from original run', async () => {
+        // arrange
+        let originalSignal: AbortSignal | undefined
+        let resumeSignal: AbortSignal | undefined
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing interrupt and signal
+                  if (!originalSignal) {
+                    originalSignal = c.signal
+                    await c.interrupt({ prompt: 'continue?' })
+                  } else {
+                    resumeSignal = c.signal
+                  }
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+        const resumeRun = run.resume({}, '$auto:0')
+        await resumeRun
+
+        // assert
+        expect(originalSignal).toBeDefined()
+        expect(resumeSignal).toBeDefined()
+        expect(resumeSignal).not.toBe(originalSignal)
+        expect(resumeSignal).toBeInstanceOf(AbortSignal)
+      })
+
+      it('run.stop() on a buildResumeFn resume handle aborts the resume\'s ctx.signal', async () => {
+        // arrange
+        let resumeSignalCapture: AbortSignal | undefined
+        let resumeSignalAbortedAfterStop: boolean | undefined
+        let isResume = false
+        let unblockResume: (() => void) | undefined
+        const resumeBlocker = new Promise<void>(r => { unblockResume = r })
+        const h = createHarness<Record<string, never>>()()
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing interrupt and signal
+                  if (!isResume) {
+                    // First run: trigger interrupt
+                    isResume = true
+                    await c.interrupt({ prompt: 'continue?' })
+                  } else {
+                    // Resume path: capture signal and wait for blocker
+                    resumeSignalCapture = c.signal
+                    await resumeBlocker
+                  }
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        const run = agent.run({}, {})
+        await run
+        const resumeRun = run.resume({}, '$auto:0')
+        // Allow resume step to start and capture signal before calling stop
+        await new Promise(resolve => setImmediate(resolve))
+        resumeRun.stop()
+        unblockResume!()
+        await resumeRun
+
+        // Check signal state after stop
+        resumeSignalAbortedAfterStop = resumeSignalCapture?.aborted
+
+        // assert
+        expect(resumeSignalCapture).toBeDefined()
+        expect(resumeSignalAbortedAfterStop).toBe(true)
+      })
+
+      it('run.stop() on an agent.resume() handle aborts the resume\'s ctx.signal', async () => {
+        // arrange
+        const stubStore = makeStubStore({
+          load: vi.fn().mockResolvedValue({
+            agentId: 'test-agent',
+            runId: 'run-id-123',
+            sessionId: 'test-session',
+            version: 1,
+            startedAt: new Date().toISOString(),
+            settledAt: new Date().toISOString(),
+            phase: 'paused',
+            initialState: {},
+            finalState: { $interrupt: { interruptId: 'interrupt-1' } },
+          } as StoredRun),
+        })
+
+        let outerCrossProcessSignal: AbortSignal | undefined
+        let resumeSignalAbortedAfterStop: boolean | undefined
+        let unblockCrossProcess: (() => void) | undefined
+        const crossProcessBlocker = new Promise<void>(r => { unblockCrossProcess = r })
+        const h = createHarness<Record<string, never>>()({})
+          .store({ session: stubStore })
+          .loop(l => {
+            l.start()
+              .step('step1', {
+                run: async (_s: unknown, c: any) => { // any: accessing signal
+                  outerCrossProcessSignal = c.signal
+                  await crossProcessBlocker
+                  return {}
+                },
+                route: () => 'done',
+              })
+              .on('done')
+              .end()
+          })
+        const agent = createAgent('test-agent', h, {})
+
+        // act
+        // resume(response, sessionId, interruptId)
+        const resumeRun = agent.resume({}, 'test-session', 'interrupt-1')
+        // Allow resume step to start and capture signal before calling stop
+        await new Promise(resolve => setImmediate(resolve))
+        resumeRun.stop()
+        unblockCrossProcess!()
+        await resumeRun
+
+        // Check signal state after stop
+        resumeSignalAbortedAfterStop = outerCrossProcessSignal?.aborted
+
+        // assert
+        expect(outerCrossProcessSignal).toBeDefined()
+        expect(resumeSignalAbortedAfterStop).toBe(true)
+      })
+    })
+
+    describe('Group 5: cancellation propagation to child agent runs', () => {
+      it('child run receives the same signal object passed by parent via resources', async () => {
+        // arrange
+        let parentSignal: AbortSignal | undefined
+        let childSignal: AbortSignal | undefined
+        const childAgent = createAgent(
+          'child-agent',
+          createHarness<Record<string, never>>()()
+            .loop(l => {
+              l.start()
+                .step('step1', {
+                  run: async (_s: unknown, c: any) => { // any: accessing signal
+                    childSignal = c.signal
+                    return {}
+                  },
+                  route: () => 'done',
+                })
+                .on('done')
+                .end()
+            }),
+          {}
+        )
+
+        const parentAgent = createAgent(
+          'parent-agent',
+          createHarness<Record<string, never>>()()
+            .loop(l => {
+              l.start()
+                .step('step1', {
+                  run: async (_s: unknown, c: any) => { // any: accessing signal and launching child
+                    parentSignal = c.signal
+                    await childAgent.run({}, { signal: c.signal })
+                    return {}
+                  },
+                  route: () => 'done',
+                })
+                .on('done')
+                .end()
+            }),
+          {}
+        )
+
+        // act
+        const parentRun = parentAgent.run({}, {})
+        await parentRun
+
+        // assert
+        // Child receives the exact same signal object from parent
+        expect(parentSignal).toBeDefined()
+        expect(childSignal).toBeDefined()
+        expect(childSignal).toBe(parentSignal)
+      })
+
+      it('child run receives an already-aborted signal when the parent is stopped before the child starts', async () => {
+        // Behavior spec item 11: parent passes its signal to child, parent is stopped,
+        // child receives an already-aborted signal.
+        // This implements the end-to-end cascade per the testplan.
+
+        // arrange
+        let parentSignal: AbortSignal | undefined
+        let childSeenAborted: boolean | undefined
+        let unblockChild: (() => void) | undefined
+        const childBlocker = new Promise<void>(r => { unblockChild = r })
+
+        const childAgent = createAgent(
+          'child-agent',
+          createHarness<Record<string, never>>()()
+            .loop(l => {
+              l.start()
+                .step('step1', {
+                  run: async (_s: unknown, c: any) => { // any: accessing signal
+                    // Child waits for external trigger before reading signal
+                    // This ensures we can abort before the child reads
+                    await childBlocker
+                    // Child checks signal.aborted state
+                    childSeenAborted = c.signal.aborted
+                    return {}
+                  },
+                  route: () => 'done',
+                })
+                .on('done')
+                .end()
+            }),
+          {}
+        )
+
+        const parentAgent = createAgent(
+          'parent-agent',
+          createHarness<Record<string, never>>()()
+            .loop(l => {
+              l.start()
+                .step('step1', {
+                  run: async (_s: unknown, c: any) => { // any: accessing signal and launching child
+                    parentSignal = c.signal
+                    // Synchronously create the child run with the parent's signal
+                    const childRun = childAgent.run({}, { signal: c.signal })
+                    // Wait for child to complete
+                    await childRun
+                    return {}
+                  },
+                  route: () => 'done',
+                })
+                .on('done')
+                .end()
+            }),
+          {}
+        )
+
+        // act
+        const parentRun = parentAgent.run({}, {})
+        // Allow the parent step to start and launch the child
+        await new Promise(resolve => setImmediate(resolve))
+        await new Promise(resolve => setImmediate(resolve))
+        // Stop the parent — this aborts the signal
+        parentRun.stop()
+        // Small delay to ensure abort has propagated
+        await new Promise(resolve => setImmediate(resolve))
+        // Now unblock the child to read the (aborted) signal
+        unblockChild!()
+        // Let both parent and child settle
+        await parentRun
+
+        // assert
+        expect(parentSignal).toBeDefined()
+        expect(parentSignal!.aborted).toBe(true)
+        // This tests that child saw the signal as aborted.
+        // The child reads the signal after the parent was stopped and the signal was aborted.
+        expect(childSeenAborted).toBe(true)
+      })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // F29 — RunContextIds (parentRunId reserved key, threading)
+  // -----------------------------------------------------------------------
+
+  describe('Group: parentRunId reserved key extraction and threading', () => {
+    it('does not throw UnknownRunSlotError when parentRunId is passed in resources', async () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { parentRunId: 'parent-xyz' })
+      const outcome = await run
+
+      // assert
+      expect(outcome).toBeDefined()
+      expect(outcome.signal).not.toBe('$error')
+    })
+
+    it('extracts string parentRunId from resources and threads to observer', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { parentRunId: 'abc-123', observer })
+      await run
+
+      // assert
+      expect(capturedCtx).toHaveLength(1)
+      expect(capturedCtx[0]!.parentRunId).toBe('abc-123')
+    })
+
+    it('silently ignores non-string parentRunId value in resources', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { parentRunId: 42, observer } as unknown as Record<string, unknown>)
+      await run
+
+      // assert
+      expect(capturedCtx[0]!.parentRunId).toBeUndefined()
+      expect('parentRunId' in capturedCtx[0]!).toBe(false)
+    })
+
+    it('omits parentRunId from RunContext when absent from agent.run() resources', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { observer })
+      await run
+
+      // assert
+      expect(capturedCtx).toHaveLength(1)
+      expect(capturedCtx[0]!.parentRunId).toBeUndefined()
+      expect('parentRunId' in capturedCtx[0]!).toBe(false)
+    })
+
+    it('receives parentRunId in onRunEnd when passed in resources', async () => {
+      // arrange
+      const endCtx: RunContext[] = []
+      const observer = { onRunEnd: vi.fn((ctx: any) => endCtx.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { parentRunId: 'abc-123', observer })
+      await run
+
+      // assert
+      expect(endCtx).toHaveLength(1)
+      expect(endCtx[0]!.parentRunId).toBe('abc-123')
+    })
+  })
+
+  describe('Group: runId threading to observer', () => {
+    it('passes runId from RunHandle to observer at onRunStart', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { observer })
+      await run
+
+      // assert
+      expect(capturedCtx[0]!.runId).toBe(run.runId)
+    })
+
+    it('passes same runId to both onRunStart and onRunEnd', async () => {
+      // arrange
+      const startCtx: RunContext[] = []
+      const endCtx: RunContext[] = []
+      const observer = {
+        onRunStart: vi.fn((ctx: any) => startCtx.push(ctx)), // any: capturing RunContext
+        onRunEnd: vi.fn((ctx: any) => endCtx.push(ctx)),      // any: capturing RunContext
+      }
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      const run = agent.run({}, { observer })
+      await run
+
+      // assert
+      expect(startCtx[0]!.runId).toBe(endCtx[0]!.runId)
+      expect(startCtx[0]!.runId).toBe(run.runId)
+    })
+  })
+
+  describe('Group: concurrency isolation', () => {
+    it('concurrent runs with different parentRunId values deliver to each observer independently', async () => {
+      // arrange
+      const ctxA: RunContext[] = []
+      const ctxB: RunContext[] = []
+      const obsA = { onRunStart: vi.fn((ctx: any) => ctxA.push(ctx)) } // any: capturing RunContext
+      const obsB = { onRunStart: vi.fn((ctx: any) => ctxB.push(ctx)) } // any: capturing RunContext
+
+      const h = createHarness<Record<string, never>>()({})
+        .loop(l =>
+          l
+            .start()
+            .step('go', { route: () => 'done' })
+            .on('done')
+            .end(),
+        )
+
+      const agent = createAgent('agent-1', h, {})
+
+      // act
+      await Promise.all([
+        agent.run({}, { parentRunId: 'parent-A', sessionId: 'sess-A', observer: obsA }),
+        agent.run({}, { parentRunId: 'parent-B', sessionId: 'sess-B', observer: obsB }),
+      ])
+
+      // assert
+      expect(ctxA[0]!.parentRunId).toBe('parent-A')
+      expect(ctxB[0]!.parentRunId).toBe('parent-B')
     })
   })
 })

@@ -41,6 +41,8 @@ export type RunFn<S, Ctx> = (
   ctx: Ctx & {
     readonly agentId: string
     readonly sessionId: string
+    readonly runId: string
+    readonly signal: AbortSignal
     readonly interrupt: (prompt: unknown, id?: string) => Promise<unknown>
     readonly emit: (name: string, payload?: unknown) => void
     readonly keepAlive: KeepAliveFn

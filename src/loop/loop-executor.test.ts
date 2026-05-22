@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { runLoop, UnknownSignalError, NoNextStepError } from './loop-executor.js'
 import { createLoopBuilder, extractLoopDefinition } from './loop-dsl.js'
 import type { LoopDefinition } from './loop-dsl.js'
+import type { RunContext } from '../agent/observer.js'
 // ctx-emit injection tests use the same build helper defined below
 
 // File-level build helper: constructs a LoopDefinition from a builder lambda
@@ -1705,7 +1706,7 @@ describe('runLoop', () => {
 
       // assert
       expect(obs.onRunStart).toHaveBeenCalledOnce()
-      expect(obs.onRunStart).toHaveBeenCalledWith({ agentId: 'ag-1', sessionId: 'ses-1' })
+      expect(obs.onRunStart).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'ag-1', sessionId: 'ses-1', runId: expect.any(String) }))
       expect(callOrder[0]).toBe('onRunStart')
     })
 
@@ -1724,7 +1725,7 @@ describe('runLoop', () => {
       // assert
       expect(onRunEnd).toHaveBeenCalledOnce()
       expect(onRunEnd).toHaveBeenCalledWith(
-        { agentId: 'ag-1', sessionId: 'ses-1' },
+        expect.objectContaining({ agentId: 'ag-1', sessionId: 'ses-1', runId: expect.any(String) }),
         expect.objectContaining({ signal: 'done', durationMs: expect.any(Number) }),
       )
       const { durationMs } = (onRunEnd.mock.calls[0] as [unknown, { durationMs: number }])[1]
@@ -2048,6 +2049,147 @@ describe('runLoop', () => {
 
   })
 
+  describe('observer — runId and parentRunId threading', () => {
+
+    it('passes runId from callbacks to RunContext at onRunStart', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: RunContext) => capturedCtx.push(ctx)) }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, {
+        observer,
+        runId: 'explicit-run-id',
+      })
+
+      // assert
+      expect(capturedCtx).toHaveLength(1)
+      expect(capturedCtx[0]!.runId).toBe('explicit-run-id')
+    })
+
+    it('passes runId from callbacks to RunContext at onRunEnd with same value', async () => {
+      // arrange
+      const startCtx: RunContext[] = []
+      const endCtx: RunContext[] = []
+      const observer = {
+        onRunStart: vi.fn((ctx: RunContext) => startCtx.push(ctx)),
+        onRunEnd: vi.fn((ctx: RunContext) => endCtx.push(ctx)),
+      }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, {
+        observer,
+        runId: 'explicit-run-id',
+      })
+
+      // assert
+      expect(startCtx[0]!.runId).toBe(endCtx[0]!.runId)
+      expect(startCtx[0]!.runId).toBe('explicit-run-id')
+    })
+
+    it('uses empty string as fallback when callbacks.runId is absent', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: RunContext) => capturedCtx.push(ctx)) }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, { observer })
+
+      // assert
+      expect(capturedCtx[0]!.runId).toBe('')
+    })
+
+    it('passes parentRunId from callbacks to RunContext', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: RunContext) => capturedCtx.push(ctx)) }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, {
+        observer,
+        runId: 'run-1',
+        parentRunId: 'parent-xyz',
+      })
+
+      // assert
+      expect(capturedCtx[0]!.parentRunId).toBe('parent-xyz')
+    })
+
+    it('omits parentRunId from RunContext when callbacks.parentRunId is absent', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: RunContext) => capturedCtx.push(ctx)) }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, {
+        observer,
+        runId: 'run-1',
+      })
+
+      // assert
+      expect(capturedCtx[0]!.parentRunId).toBeUndefined()
+      expect('parentRunId' in capturedCtx[0]!).toBe(false)
+    })
+
+    it('preserves parentRunId across onRunStart and onRunEnd', async () => {
+      // arrange
+      const startCtx: RunContext[] = []
+      const endCtx: RunContext[] = []
+      const observer = {
+        onRunStart: vi.fn((ctx: RunContext) => startCtx.push(ctx)),
+        onRunEnd: vi.fn((ctx: RunContext) => endCtx.push(ctx)),
+      }
+      const graph = build(l =>
+        l.start()
+         .step('go', { route: () => 'done' })
+         .on('done').end()
+      )
+      const ctx = { agentId: 'ag', sessionId: 'sess' }
+
+      // act
+      await runLoop(graph, {}, ctx, undefined, undefined, undefined, {
+        observer,
+        runId: 'run-1',
+        parentRunId: 'parent-abc',
+      })
+
+      // assert
+      expect(startCtx[0]!.parentRunId).toBe('parent-abc')
+      expect(endCtx[0]!.parentRunId).toBe('parent-abc')
+    })
+
+  })
+
   describe('observer — ordering invariants', () => {
 
     it('onRunStart fires before the first onStepStart; onRunEnd fires after the last onStepEnd', async () => {
@@ -2081,7 +2223,7 @@ describe('runLoop', () => {
       const graph = build(l =>
         l.start().step('a', {
           run: vi.fn().mockImplementation(async () => { callOrder.push('step.run'); return {} }),
-          route: (s: any) => { callOrder.push('route'); return 'done' }, // any: untyped state in test
+          route: (_s: any) => { callOrder.push('route'); return 'done' }, // any: untyped state in test
         }).on('done').end()
       )
       const state: Record<string, unknown> = {}

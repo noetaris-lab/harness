@@ -14,6 +14,9 @@ import {
   InvalidLoopBuilderError,
 } from './loop-dsl.js'
 
+// UUID regex pattern for validation
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 describe('LoopDSL', () => {
   describe('createLoopBuilder', () => {
     it('produces empty LoopDefinition when no DSL calls are made', () => {
@@ -423,6 +426,23 @@ describe('LoopDSL', () => {
 
       // act + assert
       expectTypeOf(step).toMatchTypeOf<RunFn<TestState, TestCtx>>()
+    })
+
+    it('RunFn ctx parameter includes runId and signal', () => {
+      // arrange
+      type TestCtx = { sessionId: string }
+      type TestState = { count: number }
+
+      // act & assert
+      const step: RunFn<TestState, TestCtx> = async (state, ctx) => {
+        void ctx.sessionId
+        void state.count
+        return {}
+      }
+
+      expectTypeOf(step).parameter(1).toHaveProperty('runId').toEqualTypeOf<string>()
+      expectTypeOf(step).parameter(1).toHaveProperty('signal').toEqualTypeOf<AbortSignal>()
+      expectTypeOf(step).parameter(1).toHaveProperty('agentId').toEqualTypeOf<string>()
     })
   })
 })

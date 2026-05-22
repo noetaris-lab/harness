@@ -6,6 +6,7 @@ import { InterruptPause } from './ctx-interrupt.js'
 import { UnknownSignalError } from '../loop/loop-executor.js'
 import { createLoopBuilder, extractLoopDefinition } from '../loop/loop-dsl.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
+import type { RunContext } from './observer.js'
 import * as loopExecutorModule from '../loop/loop-executor.js'
 import { createHarness } from '../harness/harness-builder.js'
 import { createAgent } from './create-agent.js'
@@ -498,6 +499,304 @@ describe('session-lifecycle', () => {
   })
 
   // -----------------------------------------------------------------------
+  // Group 11: runWithSession — completed session short-circuit
+  // -----------------------------------------------------------------------
+
+  describe('runWithSession — completed session short-circuit', () => {
+    it('returns stored finalState with cursor null and paused false when session is completed', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-completed-shape',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: { x: 42, label: 'settled' },
+          signal: 'done',
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-completed-shape' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-completed-shape', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.state).toEqual({ x: 42, label: 'settled' })
+      expect(result.cursor).toBeNull()
+      expect(result.paused).toBe(false)
+    })
+
+    it('returns signal from stored run when signal is "done"', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-completed-signal-done',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+          signal: 'done',
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-completed-signal-done' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-completed-signal-done', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBe('done')
+    })
+
+    it('returns signal null when stored run has no signal field', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-completed-no-signal',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-completed-no-signal' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-completed-no-signal', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBeNull()
+    })
+
+    it('returns stored finalState unchanged when initialState arg contains additional fields', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-initial-ignored',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: { result: 'ok' },
+          signal: 'done',
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-initial-ignored' }
+      const initialStateArg = { extra: 'should-be-ignored', result: 'SHOULD-NOT-OVERWRITE' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-initial-ignored', randomUUID(), graph, initialStateArg, undefined, ctx)
+
+      // assert
+      expect(result.state).toEqual({ result: 'ok' })
+      expect(result.state).not.toHaveProperty('extra')
+    })
+
+    it('does not call runLoop when session is completed', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-no-runloop',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+          signal: 'done',
+        }),
+      })
+      vi.spyOn(loopExecutorModule, 'runLoop')
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-no-runloop' }
+
+      // act
+      await runWithSession(store, 'test-agent', 'sid-no-runloop', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(loopExecutorModule.runLoop).not.toHaveBeenCalled()
+    })
+
+    it('does not call store.save when session is completed', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-no-save',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+          signal: 'done',
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-no-save' }
+
+      // act
+      await runWithSession(store, 'test-agent', 'sid-no-save', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(store.save).not.toHaveBeenCalled()
+    })
+
+    it('does not call observer.onRunStart or observer.onRunEnd when session is completed', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-no-observer',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: {},
+          signal: 'done',
+        }),
+      })
+      const observer = { onRunStart: vi.fn(), onRunEnd: vi.fn() }
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-no-observer' }
+
+      // act
+      await runWithSession(store, 'test-agent', 'sid-no-observer', randomUUID(), graph, {}, undefined, ctx, { observer })
+
+      // assert
+      expect(observer.onRunStart).not.toHaveBeenCalled()
+      expect(observer.onRunEnd).not.toHaveBeenCalled()
+    })
+
+    it('runs the full execution path when store.load returns null (fresh session)', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockResolvedValue(null) })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-fresh-path' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-fresh-path', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(store.save).toHaveBeenCalledOnce()
+    })
+
+    it('runs the full execution path when session is paused', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-paused-path',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'paused',
+          initialState: {},
+          finalState: {},
+          step: 'go',
+        }),
+      })
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-paused-path' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-paused-path', randomUUID(), graph, {}, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(store.save).toHaveBeenCalledOnce()
+    })
+
+    it('runs the no-store path normally when store is undefined', async () => {
+      // arrange
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-nostore-path' }
+
+      // act
+      const result = await runWithSession(undefined, 'test-agent', 'sid-nostore-path', randomUUID(), graph, { n: 1 }, undefined, ctx)
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(result.state).toMatchObject({ n: 1 })
+    })
+
+    it('fires StoreLoadError path when store.load throws', async () => {
+      // arrange
+      const store = makeStubStore({ load: vi.fn().mockRejectedValue(new Error('db error')) })
+      const onStoreError = vi.fn()
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-load-error-path' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-load-error-path', randomUUID(), graph, {}, undefined, ctx, { onStoreError })
+
+      // assert
+      expect(result.signal).toBe('$error')
+      expect(onStoreError).toHaveBeenCalledWith(expect.objectContaining({ cause: expect.any(Error) }), 'load')
+    })
+
+    it('returns normally without throwing LeaseExpiredError when claim is active and session is completed', async () => {
+      // arrange
+      const store = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent',
+          runId: 'old-run-id',
+          sessionId: 'sid-lease-completed',
+          version: 0,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          settledAt: '2026-01-01T00:01:00.000Z',
+          phase: 'completed',
+          initialState: {},
+          finalState: { val: 7 },
+          signal: 'ok',
+        }),
+      })
+      const leaseRef = {
+        current: {
+          agentId: 'test-agent',
+          sessionId: 'sid-lease-completed',
+          expiresAt: Date.now() - 1000,
+          token: 'lease-token-1',
+        },
+      }
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-lease-completed' }
+
+      // act
+      const result = await runWithSession(store, 'test-agent', 'sid-lease-completed', randomUUID(), graph, {}, undefined, ctx, { leaseRef })
+
+      // assert
+      expect(result.signal).toBe('ok')
+      expect(result.state).toEqual({ val: 7 })
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // Group 14: create-agent.ts wiring (integration)
   // -----------------------------------------------------------------------
 
@@ -611,6 +910,73 @@ describe('session-lifecycle', () => {
       // assert
       expect(capturedCallbacks).toBeDefined()
       expect('observer' in (capturedCallbacks ?? {})).toBe(false)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: SessionRunOptions.parentRunId threading
+  // -----------------------------------------------------------------------
+
+  describe('SessionRunOptions.parentRunId threading', () => {
+    it('threads parentRunId from options to runLoop callbacks', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext for assertion
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-parent-thread' }
+
+      // act
+      await runWithSession(
+        undefined, 'test-agent', 'sid-parent-thread', randomUUID(), graph, {}, undefined, ctx,
+        { observer, parentRunId: 'parent-123' }
+      )
+
+      // assert
+      expect(capturedCtx[0]!.parentRunId).toBe('parent-123')
+    })
+
+    it('omits parentRunId from RunContext when options.parentRunId is absent', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext for assertion
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-no-parent' }
+
+      // act
+      await runWithSession(
+        undefined, 'test-agent', 'sid-no-parent', randomUUID(), graph, {}, undefined, ctx,
+        { observer }
+      )
+
+      // assert
+      expect(capturedCtx[0]!.parentRunId).toBeUndefined()
+      expect('parentRunId' in capturedCtx[0]!).toBe(false)
+    })
+
+    it('preserves parentRunId across sequential calls with different values', async () => {
+      // arrange
+      const capturedCtx: RunContext[] = []
+      const observer = { onRunStart: vi.fn((ctx: any) => capturedCtx.push(ctx)) } // any: capturing RunContext for assertion
+      const graph = makeCompletingGraph()
+      const ctx = { agentId: 'test-agent', sessionId: 'sid-sequence' }
+
+      // act — first call with parentRunId
+      await runWithSession(
+        undefined, 'test-agent', 'sid-sequence', randomUUID(), graph, {}, undefined, ctx,
+        { observer, parentRunId: 'parent-first' }
+      )
+
+      // second call without parentRunId (reusing same ctx and observer)
+      await runWithSession(
+        undefined, 'test-agent', 'sid-sequence', randomUUID(), graph, {}, undefined, ctx,
+        { observer }
+      )
+
+      // assert
+      expect(capturedCtx).toHaveLength(2)
+      expect(capturedCtx[0]!.parentRunId).toBe('parent-first')
+      expect(capturedCtx[1]!.parentRunId).toBeUndefined()
+      expect('parentRunId' in capturedCtx[1]!).toBe(false)
     })
   })
 })

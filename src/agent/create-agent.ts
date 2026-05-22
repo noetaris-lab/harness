@@ -310,7 +310,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
   }
 
   // Reserved keys are skipped during agent.run() resource validation
-  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners', 'observer', 'claimOptions'])
+  const reservedRunKeys = new Set(['sessionId', 'signal', 'events', 'listeners', 'observer', 'claimOptions', 'parentRunId'])
 
   // one per agent instance; tracks all session IDs currently executing
   const inFlightSessions = new Set<string>()
@@ -329,7 +329,12 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     iId: string,
     resumeOpts?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void },
   ): RunHandle => {
-    const flag = { stopped: false }
+    let _stopped = false
+    const abortController = new AbortController()
+    const flag = {
+      get stopped(): boolean { return _stopped },
+      set stopped(v: boolean) { _stopped = v; if (v) abortController.abort() },
+    }
     const ref: { current: string | null } = { current: null }
     const rId = randomUUID()
 
@@ -361,10 +366,12 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         try {
           if (capturedStore === undefined) throw new NoInterruptError()
           await injectInterruptResponse(capturedStore, id, sId, iId, resp)
-          const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
+          const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string; readonly runId: string; readonly signal: AbortSignal } = {
             ...Object.fromEntries(agentInternals.resolvedProviders),
             agentId: id,
             sessionId: sId,
+            runId: rId,
+            signal: abortController.signal,
           }
           const r = await runWithSession(
             capturedStore,
@@ -450,28 +457,37 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       if (interruptPendingSessions.has(sessionId)) throw new SessionPendingInterruptError(sessionId)
       inFlightSessions.add(sessionId)
 
-      // AbortSignal wiring — register first to avoid race, then check already-aborted state
-      const stopFlag = { stopped: false }
+      // AbortSignal and stop-flag wiring
+      let _stopped = false
+      const abortController = new AbortController()
+      const stopFlag = {
+        get stopped(): boolean { return _stopped },
+        set stopped(v: boolean) { _stopped = v; if (v) abortController.abort() },
+      }
       const rawSignal = resources['signal']
+      let ctxSignal: AbortSignal = abortController.signal
       if (rawSignal instanceof AbortSignal) {
-        rawSignal.addEventListener('abort', () => { stopFlag.stopped = true }, { once: true })
+        ctxSignal = rawSignal
+        rawSignal.addEventListener('abort', () => { stopFlag.stopped = true; abortController.abort() }, { once: true })
         if (rawSignal.aborted) stopFlag.stopped = true
       }
 
       // Fresh stepRef per call for currentStep tracking
       const stepRef: { current: string | null } = { current: null }
 
-      // Assemble ctx: resolvedProviders merged with runtime slots and sessionId
+      // Assemble ctx: resolvedProviders merged with runtime slots and sessionId, runId, and signal
       const runtimeSlots: Record<string, unknown> = {}
       for (const key of agentInternals.runtimeKeys) {
         if (reservedRunKeys.has(key)) continue // reserved keys are consumed by framework, not injected into ctx
         runtimeSlots[key] = resources[key]
       }
-      const ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string } = {
+      const ctx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string; readonly runId: string; readonly signal: AbortSignal } = {
         ...Object.fromEntries(agentInternals.resolvedProviders),
         ...runtimeSlots,
         agentId: id,
         sessionId,
+        runId,
+        signal: ctxSignal,
         ...(agentOptions?.instanceId !== undefined ? { instanceId: agentOptions.instanceId } : {}),
       }
 
@@ -486,6 +502,10 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           (slot as { bindObserver: (o: Observer) => void }).bindObserver(observer ?? NOOP_OBSERVER) // as: narrowed by duck-type check on line above
         }
       }
+
+      // Extract parentRunId from resources (reserved key)
+      const parentRunId =
+        typeof resources['parentRunId'] === 'string' ? resources['parentRunId'] : undefined
 
       const options: SessionRunOptions = {
         shouldStop: () => stopFlag.stopped,
@@ -502,6 +522,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
         ...(observer !== undefined ? { observer } : {}),
         ...(agentOptions?.instanceId !== undefined ? { instanceId: agentOptions.instanceId } : {}),
+        ...(parentRunId !== undefined ? { parentRunId } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -587,13 +608,25 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           interruptPendingSessions.delete(sessionId)
           inFlightSessions.add(sessionId)
 
-          const resumeStopFlag = { stopped: false }
+          let _resumeStopped = false
+          const resumeAbortController = new AbortController()
+          const resumeStopFlag = {
+            get stopped(): boolean { return _resumeStopped },
+            set stopped(v: boolean) { _resumeStopped = v; if (v) resumeAbortController.abort() },
+          }
           const resumeStepRef: { current: string | null } = { current: null }
           const resumeRunId = randomUUID()
 
           const resumeExecution = (async (): Promise<RunOutcome> => {
             await Promise.resolve()
             try {
+              // Create a new ctx for this resume invocation with updated runId and signal
+              const resumeCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string; readonly runId: string; readonly signal: AbortSignal } = {
+                ...ctx,
+                runId: resumeRunId,
+                signal: resumeAbortController.signal,
+              }
+
               if (capturedStore !== undefined) {
                 // Cross-process path: inject response into store, reload, and re-run
                 await injectInterruptResponse(capturedStore, id, sessionId, interruptId, response)
@@ -605,7 +638,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                   agentInternals.loopDef,
                   {},
                   agentInternals.stateSchema,
-                  ctx,
+                  resumeCtx,
                   {
                     shouldStop: () => resumeStopFlag.stopped,
                     onBeforeStep: (n: string, s: Record<string, unknown>) => {
@@ -637,7 +670,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
               const r = await runLoop(
                 agentInternals.loopDef,
                 state,
-                ctx,
+                resumeCtx,
                 agentInternals.stateSchema,
                 () => resumeStopFlag.stopped,
                 cursor,

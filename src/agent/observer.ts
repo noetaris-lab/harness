@@ -5,6 +5,17 @@ export interface RunContext {
   readonly agentId: string
   readonly sessionId: string
   /**
+   * The UUID for this specific run invocation. Always present in RunContext
+   * passed to observer methods.
+   */
+  readonly runId: string
+  /**
+   * Optional parent run UUID for cross-process trace correlation. Present
+   * when parentRunId was passed to agent.run() resources. Absent for top-level
+   * runs or when not provided by the caller.
+   */
+  readonly parentRunId?: string
+  /**
    * The physical instance ID of the agent process, if configured via
    * `createAgent()` options. Absent when `instanceId` was not provided.
    */

@@ -8,7 +8,7 @@ describe('composeObservers', () => {
     it('forwards onRunStart call to single observer with exact context', () => {
       // arrange
       const obs = { onRunStart: vi.fn() }
-      const runCtx: RunContext = { agentId: 'agent-1', sessionId: 'sess-1' }
+      const runCtx: RunContext = { agentId: 'agent-1', sessionId: 'sess-1', runId: 'run-1' }
 
       // act
       const composed = composeObservers(obs)
@@ -37,7 +37,7 @@ describe('composeObservers', () => {
     it('forwards onRunEnd call with context and event object by reference', () => {
       // arrange
       const obs = { onRunEnd: vi.fn() }
-      const runCtx: RunContext = { agentId: 'agent-1', sessionId: 'sess-1' }
+      const runCtx: RunContext = { agentId: 'agent-1', sessionId: 'sess-1', runId: 'run-1' }
       const event = { signal: 'done', durationMs: 150 }
 
       // act
@@ -143,7 +143,7 @@ describe('composeObservers', () => {
       const obsA = { onRunEnd: vi.fn(() => callOrder.push('A')) }
       const obsB = { onRunEnd: vi.fn(() => callOrder.push('B')) }
       const obsC = { onRunEnd: vi.fn(() => callOrder.push('C')) }
-      const runCtx: RunContext = { agentId: 'a', sessionId: 's' }
+      const runCtx: RunContext = { agentId: 'a', sessionId: 's', runId: 'r' }
       const event = { signal: 'done', durationMs: 300 }
 
       // act
@@ -205,11 +205,11 @@ describe('composeObservers', () => {
       const composed = composeObservers()
 
       // assert
-      expect(() => composed.onRunStart!({ agentId: 'a', sessionId: 's' })).not.toThrow()
+      expect(() => composed.onRunStart!({ agentId: 'a', sessionId: 's', runId: 'r' })).not.toThrow()
       expect(() => composed.onStepStart!(stepCtx)).not.toThrow()
       expect(() => composed.onStepEnd!(stepCtx, { durationMs: 0 })).not.toThrow()
       expect(() => composed.onStepError!(stepCtx, { error: new Error(), durationMs: 0 })).not.toThrow()
-      expect(() => composed.onRunEnd!({ agentId: 'a', sessionId: 's' }, { signal: 'done', durationMs: 0 })).not.toThrow()
+      expect(() => composed.onRunEnd!({ agentId: 'a', sessionId: 's', runId: 'r' }, { signal: 'done', durationMs: 0 })).not.toThrow()
       expect(() => composed.onInterrupt!(stepCtx, { prompt: null, interruptId: 'x' })).not.toThrow()
       expect(() => composed.onEvent!(stepCtx, 'test', undefined)).not.toThrow()
     })
@@ -290,7 +290,7 @@ describe('RunContext — instanceId field', () => {
 
   it('observer receives instanceId when RunContext carries instanceId', () => {
     // arrange
-    const ctx: RunContext = { agentId: 'ag-1', sessionId: 'sess-1', instanceId: 'pod-1' }
+    const ctx: RunContext = { agentId: 'ag-1', sessionId: 'sess-1', runId: 'run-1', instanceId: 'pod-1' }
     let captured: string | undefined
     const obs: Observer = { onRunStart: (c: RunContext) => { captured = c.instanceId } }
 
@@ -303,7 +303,7 @@ describe('RunContext — instanceId field', () => {
 
   it('observer receives undefined instanceId when RunContext omits instanceId', () => {
     // arrange
-    const ctx: RunContext = { agentId: 'ag-2', sessionId: 'sess-2' }
+    const ctx: RunContext = { agentId: 'ag-2', sessionId: 'sess-2', runId: 'run-2' }
     let captured: string | undefined
     const obs: Observer = { onRunStart: (c: RunContext) => { captured = c.instanceId } }
 
@@ -312,6 +312,38 @@ describe('RunContext — instanceId field', () => {
 
     // assert
     expect(captured).toBeUndefined()
+  })
+
+})
+
+// -----------------------------------------------------------------------
+// Group 5: RunContext runId and parentRunId fields
+// -----------------------------------------------------------------------
+
+describe('RunContext — runId and parentRunId fields', () => {
+
+  it('RunContext includes runId as a required string field', () => {
+    // arrange
+    const ctx: RunContext = { agentId: 'ag', sessionId: 'sess', runId: 'run-123' }
+
+    // act & assert
+    expect(ctx.runId).toBe('run-123')
+  })
+
+  it('RunContext includes parentRunId as an optional string field', () => {
+    // arrange
+    const ctx: RunContext = { agentId: 'ag', sessionId: 'sess', runId: 'run-123', parentRunId: 'parent-456' }
+
+    // act & assert
+    expect(ctx.parentRunId).toBe('parent-456')
+  })
+
+  it('parentRunId is absent from RunContext when not provided', () => {
+    // arrange
+    const ctx: RunContext = { agentId: 'ag', sessionId: 'sess', runId: 'run-123' }
+
+    // act & assert
+    expect('parentRunId' in ctx).toBe(false)
   })
 
 })
