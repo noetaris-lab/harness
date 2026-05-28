@@ -68,12 +68,16 @@ export interface Agent {
   /**
    * Cross-process entry point for responding to a pending interrupt.
    * Returns a RunHandle synchronously; the execution promise performs the resume.
+   *
+   * The optional fourth argument `resources` accepts:
+   * - `observer?: Observer` — structured telemetry for the resumed run (see Observability)
+   * - `events?.onStoreError?` — raw store-error callback (unchanged from prior shape)
    */
   resume(
     response: unknown,
     sessionId: string,
     interruptId: string,
-    options?: { events?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void } },
+    resources?: Record<string, unknown>,
   ): RunHandle
 
   /**
@@ -328,6 +332,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     sId: string,
     iId: string,
     resumeOpts?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void },
+    observer?: Observer,
   ): RunHandle => {
     let _stopped = false
     const abortController = new AbortController()
@@ -365,7 +370,17 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         }
         try {
           if (capturedStore === undefined) throw new NoInterruptError()
-          await injectInterruptResponse(capturedStore, id, sId, iId, resp)
+          try {
+            await injectInterruptResponse(capturedStore, id, sId, iId, resp)
+          } catch (injectError: unknown) {
+            if (injectError instanceof NoInterruptError) throw injectError
+            // store I/O failure during interrupt injection — report as 'claim' phase error
+            const storeError = new StoreLoadError(injectError)
+            resumeOpts?.onStoreError?.(storeError, 'claim')
+            const failState = initializeState(null, {}, agentInternals.stateSchema)
+            ;(failState as Record<string, unknown>)['$error'] = storeError
+            return { state: failState, signal: '$error' }
+          }
           const agentCtx: Record<string, unknown> & { readonly agentId: string; readonly sessionId: string; readonly runId: string; readonly signal: AbortSignal } = {
             ...Object.fromEntries(agentInternals.resolvedProviders),
             agentId: id,
@@ -387,6 +402,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
               onBeforeStep: (n: string) => { ref.current = n },
               ...(resumeOpts?.onStoreError !== undefined ? { onStoreError: resumeOpts.onStoreError } : {}),
               ...(leaseRef !== undefined ? { leaseRef, claimTtlMs: claimOptions.ttlMs } : {}),
+              ...(observer !== undefined ? { observer } : {}),
             },
           )
           if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
@@ -652,6 +668,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                     ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
                     ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
                     ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
+                    ...(observer !== undefined ? { observer } : {}),
                   },
                 )
                 if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -675,6 +692,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                 () => resumeStopFlag.stopped,
                 cursor,
                 {
+                  runId: resumeRunId,
                   onBeforeStep: (n: string, s: Record<string, unknown>) => {
                     resumeStepRef.current = n
                     events.onBeforeStep?.(n, s)
@@ -684,6 +702,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                   ...(events.onComplete !== undefined ? { onComplete: events.onComplete } : {}),
                   ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
                   ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
+                  ...(observer !== undefined ? { observer } : {}),
                 },
               )
               if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -713,15 +732,24 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
       response: unknown,
       sessionId: string,
       interruptId: string,
-      resumeOptions?: { events?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void } },
+      resources?: Record<string, unknown>,
     ): RunHandle => {
+      // SessionInFlightError fence is first — before any extraction or binding (Invariant 3)
       if (inFlightSessions.has(sessionId)) throw new SessionInFlightError(sessionId)
       interruptPendingSessions.delete(sessionId)
       inFlightSessions.add(sessionId)
-      const resumeOpts = resumeOptions?.events?.onStoreError !== undefined
-        ? { onStoreError: resumeOptions.events.onStoreError }
+      const events = extractRunEvents(resources ?? {})
+      const resumeOpts = events.onStoreError !== undefined
+        ? { onStoreError: events.onStoreError }
         : undefined
-      return makeAgentResumeHandle(response, sessionId, interruptId, resumeOpts)
+      const observer = extractRunObserver(resources ?? {})
+      // bind observer unconditionally on all ObserverAware resolvedProviders (Invariant 1)
+      for (const slot of agentInternals.resolvedProviders.values()) {
+        if (slot !== null && typeof slot === 'object' && typeof (slot as Record<string, unknown>)['bindObserver'] === 'function') { // as: duck-typed structural check
+          (slot as { bindObserver: (o: Observer) => void }).bindObserver(observer ?? NOOP_OBSERVER) // as: narrowed by duck-type check on line above
+        }
+      }
+      return makeAgentResumeHandle(response, sessionId, interruptId, resumeOpts, observer ?? undefined)
     },
 
     status: (sessionId: string) => querySessionPhase(capturedStore, id, sessionId),

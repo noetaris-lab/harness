@@ -12,6 +12,7 @@ import {
   UnknownRunSlotError,
 } from './create-agent.js'
 import { NoInterruptError } from './interrupt-resume.js'
+import { SessionInFlightError } from './concurrency-errors.js'
 import type { SessionStore, StoredRun } from './session-store.js'
 import type { RunContext } from './observer.js'
 import { createHarness, getInternals } from '../harness/harness-builder.js'
@@ -1816,31 +1817,8 @@ describe('createAgent', () => {
       expect('observer' in (capturedCallbacks ?? {})).toBe(false)
     })
 
-    it('run.resume() does NOT fire observer events (resume path is out of scope in F16b)', async () => {
-      // arrange
-      const obs = { onRunStart: vi.fn(), onRunEnd: vi.fn(), onStepStart: vi.fn() }
-      const h = createHarness<Record<string, never>>()()
-        .loop(l => {
-          l.start().step('run', {
-            run: async (_s: unknown, c: any) => { await c.interrupt({ prompt: 'continue?' }); return {} }, // any: accessing interrupt for resume setup
-            route: () => 'done',
-          }).on('done').end()
-        })
-      const agent = createAgent('test-agent', h, {})
-      const firstRun = agent.run({}, { observer: obs })
-      await firstRun
-      const resumeFn = firstRun.resume
-      vi.clearAllMocks()
-
-      // act
-      await resumeFn({}, '$auto:0')
-
-      // assert
-      expect(obs.onRunStart).not.toHaveBeenCalled()
-      expect(obs.onStepStart).not.toHaveBeenCalled()
-      expect(obs.onRunEnd).not.toHaveBeenCalled()
-    })
   })
+
 
   // -----------------------------------------------------------------------
   // Group: CtxRunSignal (F29) — ctx.runId and ctx.signal injection
@@ -2621,6 +2599,796 @@ describe('createAgent', () => {
       // assert
       expect(ctxA[0]!.parentRunId).toBe('parent-A')
       expect(ctxB[0]!.parentRunId).toBe('parent-B')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // F35 — RunResumeObserver tests
+  // -----------------------------------------------------------------------
+
+  describe('Group: RunResumeObserver — Group 1: Full observer lifecycle fires on same-process in-memory resume', () => {
+    it('fires onRunStart, onStepStart, onStepEnd, and onRunEnd once each when run.resume() completes normally', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onRunStart: vi.fn(() => callOrder.push('onRunStart')),
+        onStepStart: vi.fn(() => callOrder.push('onStepStart')),
+        onStepEnd: vi.fn(() => callOrder.push('onStepEnd')),
+        onRunEnd: vi.fn(() => callOrder.push('onRunEnd')),
+      }
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('prompt?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      vi.clearAllMocks()
+      callOrder.length = 0
+
+      // act
+      const resumeRun = run1.resume('user-answer', '$auto:0')
+      await resumeRun
+
+      // assert
+      // onRunStart and onRunEnd fire once per resumed run
+      expect(obs.onRunStart).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: 'done' }))
+      // step1 re-runs (replays stored interrupt response) + step2 runs → 2 step events each
+      expect(obs.onStepStart).toHaveBeenCalledTimes(2)
+      expect(obs.onStepEnd).toHaveBeenCalledTimes(2)
+      expect(callOrder[0]).toBe('onRunStart')
+      expect(callOrder[callOrder.length - 1]).toBe('onRunEnd')
+    })
+
+    it('onRunStart receives RunContext with runId matching resumeHandle.runId and distinct from original run runId', async () => {
+      // arrange
+      const originalRunId = { value: '' }
+      const resumeCtxRunId = { value: '' }
+      const obs = { onRunStart: vi.fn((ctx: RunContext) => { resumeCtxRunId.value = ctx.runId }) }
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      originalRunId.value = run1.runId
+      vi.clearAllMocks()
+
+      // act
+      const resumeRun = run1.resume('answer', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(resumeCtxRunId.value).toBe(resumeRun.runId)
+      expect(resumeCtxRunId.value).not.toBe(originalRunId.value)
+      expect(resumeCtxRunId.value).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    })
+  })
+
+  describe('Group: RunResumeObserver — Group 2: Observer fires on cross-process store resume path', () => {
+    it('fires onRunStart with RunContext.runId equal to resumeHandle.runId on store-backed resume', async () => {
+      // arrange
+      const capturedCtxRunId = { value: '' }
+      const obs = {
+        onRunStart: vi.fn((ctx: RunContext) => { capturedCtxRunId.value = ctx.runId }),
+        onRunEnd: vi.fn(),
+      }
+      const pausedRun = {
+        agentId: 'test-agent',
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        version: 0,
+        phase: 'paused' as const,
+        startedAt: new Date().toISOString(),
+        settledAt: new Date().toISOString(),
+        initialState: {},
+        finalState: {
+          $interrupt: { interruptId: '$auto:0', prompt: 'continue?' },
+          $interruptResponses: {},
+          $cursor: 'step2',
+        },
+        step: 'step2',
+        signal: '$interrupt',
+      } satisfies StoredRun
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValueOnce(null).mockResolvedValue(pausedRun),
+      })
+      const h = createHarness<Record<string, never>>()()
+        .store({ session: stubStore })
+        .loop(l => {
+          l.start()
+            .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('prompt?'); return {} } }) // any: accessing interrupt
+            .next('step2')
+            .step('step2', { run: async () => ({}), route: () => 'done' })
+            .on('done').end()
+        })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs, sessionId: 'sess-1' })
+      await run1
+      vi.clearAllMocks()
+
+      // act
+      const resumeRun = run1.resume('user-answer', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(obs.onRunStart).toHaveBeenCalledOnce()
+      expect(capturedCtxRunId.value).toBe(resumeRun.runId)
+      expect(capturedCtxRunId.value).not.toBe(run1.runId)
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('Group: RunResumeObserver — Group 3: No observer — resume completes without runtime error', () => {
+    it('run.resume() completes normally when agent.run() was called without an observer', async () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, {})
+      await run1
+
+      // act
+      const resumeRun = run1.resume('answer', '$auto:0')
+      const outcome = await resumeRun
+
+      // assert
+      expect(outcome).toEqual(expect.objectContaining({ signal: 'done' }))
+    })
+  })
+
+  describe('Group: RunResumeObserver — Group 4: Observer fires correct events for non-happy-path resume outcomes', () => {
+    it('onInterrupt and onRunEnd($interrupt) fire when the resumed run hits a second interrupt', async () => {
+      // arrange
+      const obs = { onInterrupt: vi.fn(), onRunEnd: vi.fn() }
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('first?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async (_s: unknown, c: any) => { await c.interrupt('second?'); return {} } }) // any: accessing interrupt
+          .next('step3')
+          .step('step3', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      vi.clearAllMocks()
+
+      // act
+      const resumeRun = run1.resume('resp-1', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(obs.onInterrupt).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: '$interrupt' }))
+    })
+
+    it('onRunEnd fires with the terminal signal when resumed run exits via a named route', async () => {
+      // arrange
+      const obs = { onRunEnd: vi.fn() }
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async () => ({}), route: () => 'complete' })
+          .on('complete').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      vi.clearAllMocks()
+
+      // act
+      const resumeRun = run1.resume('resp', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: 'complete' }))
+    })
+
+    it('onStepError fires and onRunEnd fires with $error signal when a resumed step throws', async () => {
+      // arrange
+      const capturedError = { value: undefined as unknown }
+      const obs = {
+        onStepError: vi.fn((_ctx: unknown, ev: { error: unknown }) => { capturedError.value = ev.error }),
+        onRunEnd: vi.fn(),
+      }
+      const thrown = new Error('step-boom')
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async () => { throw thrown }, route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      vi.clearAllMocks()
+
+      // act
+      const resumeRun = run1.resume('resp', '$auto:0')
+      await resumeRun // loop executor catches step throws and settles with signal: '$error' — promise resolves, does not reject
+
+      // assert
+      expect(obs.onStepError).toHaveBeenCalledOnce()
+      expect(capturedError.value).toBe(thrown)
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: '$error' }))
+    })
+  })
+
+  describe('Group: RunResumeObserver — Group 5: Chained resume — each resumed run has an independent observer lifecycle', () => {
+    it('two consecutive run.resume() calls each fire onRunStart and onRunEnd with distinct runIds', async () => {
+      // arrange
+      const runStartIds: string[] = []
+      const obs = {
+        onRunStart: vi.fn((ctx: RunContext) => { runStartIds.push(ctx.runId) }),
+        onRunEnd: vi.fn(),
+      }
+      const h = createHarness<Record<string, never>>()().loop(l => {
+        l.start()
+          .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('first?'); return {} } }) // any: accessing interrupt
+          .next('step2')
+          .step('step2', { run: async (_s: unknown, c: any) => { await c.interrupt('second?'); return {} } }) // any: accessing interrupt
+          .next('step3')
+          .step('step3', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      runStartIds.length = 0
+      obs.onRunEnd.mockClear()
+
+      // act
+      const resume1 = run1.resume('resp-1', '$auto:0')
+      await resume1
+      const resume2 = resume1.resume('resp-2', '$auto:1')
+      await resume2
+
+      // assert
+      expect(runStartIds).toHaveLength(2)
+      expect(runStartIds[0]).not.toBe(runStartIds[1])
+      expect(runStartIds[0]).toBe(resume1.runId)
+      expect(runStartIds[1]).toBe(resume2.runId)
+      expect(obs.onRunEnd).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('Group: RunResumeObserver — Group 6: bindObserver is not called again during run.resume()', () => {
+    it('bindObserver call count on an ObserverAware slot remains 1 after run.resume() completes', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const h = createHarness<{ adapter: typeof slot }>()()
+        .provide('adapter', required())
+        .loop(l => {
+          l.start()
+            .step('step1', { run: async (_s: unknown, c: any) => { await c.interrupt('?'); return {} } }) // any: accessing interrupt
+            .next('step2')
+            .step('step2', { run: async () => ({}), route: () => 'done' })
+            .on('done').end()
+        })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+      const obs = { onRunStart: vi.fn() }
+
+      // act
+      const run1 = agent.run({}, { observer: obs })
+      await run1
+      const resumeRun = run1.resume('resp', '$auto:0')
+      await resumeRun
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver.mock.calls[0]![0]).toBe(obs)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // F35 — AgentResumeObserver tests (agent.resume() cross-process path)
+  // -----------------------------------------------------------------------
+
+  describe('Group: AgentResumeObserver — Group 1: Full observer lifecycle fires on cross-process agent.resume()', () => {
+    it('fires onRunStart, onStepStart, onStepEnd, and onRunEnd when agent.resume() completes normally', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const obs = {
+        onRunStart: vi.fn(() => callOrder.push('onRunStart')),
+        onStepStart: vi.fn(() => callOrder.push('onStepStart')),
+        onStepEnd: vi.fn(() => callOrder.push('onStepEnd')),
+        onRunEnd: vi.fn(() => callOrder.push('onRunEnd')),
+      }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-1', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: 'continue?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: stubStore }).loop(l => {
+        l.start()
+          .step('step1', { run: async () => ({}), route: () => 'done' })
+          .on('done').to('step2')
+          .step('step2', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      const resumeRun = agent.resume('user-answer', 'sess-1', '$auto:0', { observer: obs })
+      await resumeRun
+
+      // assert
+      expect(obs.onRunStart).toHaveBeenCalledOnce()
+      expect(obs.onStepStart).toHaveBeenCalledOnce()
+      expect(obs.onStepEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: 'done' }))
+      expect(callOrder[0]).toBe('onRunStart')
+      expect(callOrder[callOrder.length - 1]).toBe('onRunEnd')
+    })
+
+    it('onRunStart receives RunContext with correct runId, sessionId, and agentId', async () => {
+      // arrange
+      const capturedCtx = { value: undefined as unknown }
+      const obs = { onRunStart: vi.fn((ctx: RunContext) => { capturedCtx.value = ctx }) }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'my-agent', sessionId: 'sess-ctx', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('my-agent', h, {})
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-ctx', '$auto:0', { observer: obs })
+      await resumeRun
+
+      // assert
+      const ctx = capturedCtx.value as RunContext
+      expect(ctx.runId).toBe(resumeRun.runId)
+      expect(ctx.sessionId).toBe('sess-ctx')
+      expect(ctx.agentId).toBe('my-agent')
+      expect(ctx.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 2: observer extraction — absent, empty, and invalid observer values produce no events', () => {
+    it('run completes normally when agent.resume() is called without a resources argument', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-noarg', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-noarg', '$auto:0')
+      const result = await resumeRun
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+
+    it('NOOP_OBSERVER is bound and run completes normally when resources is an empty object {}', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-empty', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-empty', '$auto:0', {})
+      const result = await resumeRun
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+
+    it('no observer events fire when resources has observer: null', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-null', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-null', '$auto:0', { observer: null } as any) // any: null is intentionally invalid to test the null guard
+      const result = await resumeRun
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 3: ObserverAware slot binding behavior on agent.resume()', () => {
+    it('bindObserver(obs) is called synchronously on ObserverAware required slot before execution begins', async () => {
+      // arrange
+      const callOrder: string[] = []
+      const slot = { bindObserver: vi.fn().mockImplementation(() => callOrder.push('bindObserver')) }
+      const obs = { onRunStart: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-bind', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-bind', '$auto:0', { observer: obs })
+      const bindCountBeforeAsync = slot.bindObserver.mock.calls.length
+      await resumeRun
+
+      // assert
+      expect(bindCountBeforeAsync).toBe(1)
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver.mock.calls[0]![0]).toBe(obs)
+      expect(callOrder[0]).toBe('bindObserver')
+    })
+
+    it('bindObserver({}) (NOOP_OBSERVER) is called when agent.resume() has no observer', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-noop', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+
+      // act
+      await agent.resume('resp', 'sess-noop', '$auto:0')
+
+      // assert
+      expect(slot.bindObserver).toHaveBeenCalledOnce()
+      expect(slot.bindObserver).toHaveBeenCalledWith({})
+      const arg = slot.bindObserver.mock.calls[0]![0]
+      expect(arg).not.toBeUndefined()
+    })
+
+    it('no error and no method call when resolved slot does not implement ObserverAware', async () => {
+      // arrange
+      const plainSlot = { doWork: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-noaware', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ tool: typeof plainSlot }>()().provide('tool', required()).store({ session: stubStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { tool: plainSlot })
+      const obs = { onRunStart: vi.fn() }
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-noaware', '$auto:0', { observer: obs })
+      const result = await resumeRun
+
+      // assert
+      expect(result.signal).toBe('done')
+      expect(plainSlot.doWork).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 4: Non-happy-path outcomes fire correct observer events', () => {
+    it('onInterrupt and onRunEnd($interrupt) fire when the resumed run hits a second interrupt', async () => {
+      // arrange
+      const obs = { onInterrupt: vi.fn(), onRunEnd: vi.fn() }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-interrupt2', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: stubStore }).loop(l => {
+        l.start()
+          .step('step2', { run: async (_s: unknown, c: any) => { await c.interrupt('second-prompt?'); return {} } }) // any: accessing interrupt
+          .next('step3')
+          .step('step3', { run: async () => ({}), route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-interrupt2', '$auto:0', { observer: obs })
+      await resumeRun
+
+      // assert
+      expect(obs.onInterrupt).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: '$interrupt' }))
+    })
+
+    it('onStepError and onRunEnd($error) fire when a resumed step throws', async () => {
+      // arrange
+      const thrown = new Error('resume-step-boom')
+      const capturedError = { value: undefined as unknown }
+      const obs = {
+        onStepError: vi.fn((_ctx: unknown, ev: { error: unknown }) => { capturedError.value = ev.error }),
+        onRunEnd: vi.fn(),
+      }
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-error', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step2',
+          },
+          step: 'step2', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: stubStore }).loop(l => {
+        l.start()
+          .step('step2', { run: async () => { throw thrown }, route: () => 'done' })
+          .on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-error', '$auto:0', { observer: obs })
+      await resumeRun // runWithSession catches step throws and returns $error
+
+      // assert
+      expect(obs.onStepError).toHaveBeenCalledOnce()
+      expect(capturedError.value).toBe(thrown)
+      expect(obs.onRunEnd).toHaveBeenCalledOnce()
+      expect(obs.onRunEnd).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: '$error' }))
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 5: SessionInFlightError fence precedes extraction and binding', () => {
+    it('SessionInFlightError thrown synchronously and onRunStart never fires when session is in-flight', async () => {
+      // arrange
+      const slot = { bindObserver: vi.fn() }
+      const obs = { onRunStart: vi.fn() }
+      const blockerStore = makeStubStore({
+        load: vi.fn().mockReturnValue(new Promise<StoredRun | null>(() => { /* never resolves */ })),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<{ adapter: typeof slot }>()().provide('adapter', required()).store({ session: blockerStore }).loop(l => {
+        l.start().step('step2', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, { adapter: slot })
+      // Start the first resume to put the session in-flight (do NOT await)
+      const firstRun = agent.resume('r', 'sess-inflight', '$auto:0')
+      // sess-inflight is now in inFlightSessions; firstRun's exec promise is suspended waiting for load
+      // The first call already called bindObserver(NOOP) unconditionally — reset before the act
+      slot.bindObserver.mockClear()
+
+      // act
+      let thrownError: unknown
+      try {
+        agent.resume('resp', 'sess-inflight', '$auto:0', { observer: obs })
+      } catch (e) {
+        thrownError = e
+      }
+
+      // assert
+      expect(thrownError).toBeInstanceOf(SessionInFlightError)
+      expect(obs.onRunStart).not.toHaveBeenCalled()
+      expect(slot.bindObserver).not.toHaveBeenCalled() // fence fired before bindObserver on the second call
+
+      // cleanup
+      firstRun.then(undefined, () => {})
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 6: resources bag — onStoreError extraction and unknown key tolerance', () => {
+    it('onStoreError fires when the session store fails, extracted from resources.events', async () => {
+      // arrange
+      const storeErrors: Array<{ error: unknown; phase: string }> = []
+      const onStoreError = vi.fn((error: unknown, phase: string) => storeErrors.push({ error, phase }))
+      const failStore = makeStubStore({
+        load: vi.fn().mockRejectedValue(new Error('disk-failure')),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: failStore }).loop(l => {
+        l.start().step('step1', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      const resumeRun = agent.resume('resp', 'sess-store-fail', '$auto:0', { events: { onStoreError } })
+      const result = await resumeRun
+
+      // assert
+      expect(onStoreError).toHaveBeenCalledOnce()
+      expect(storeErrors[0]!.phase).toBe('claim')
+      expect(result.signal).toBe('$error')
+    })
+
+    it('no error thrown when resources contains an unknown key', async () => {
+      // arrange
+      const stubStore = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'test-agent', sessionId: 'sess-unknown-key', runId: 'run-1', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step1',
+          },
+          step: 'step1', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const h = createHarness<Record<string, never>>()().store({ session: stubStore }).loop(l => {
+        l.start().step('step1', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agent = createAgent('test-agent', h, {})
+
+      // act
+      let thrownError: unknown = null
+      try {
+        const resumeRun = agent.resume('resp', 'sess-unknown-key', '$auto:0', { unknownKey: 'value', anotherKey: 42 } as any) // any: unknown keys are intentionally invalid to test resource bag tolerance
+        await resumeRun
+      } catch (e) {
+        thrownError = e
+      }
+
+      // assert
+      expect(thrownError).toBeNull()
+    })
+  })
+
+  describe('Group: AgentResumeObserver — Group 7: Observer isolation between two agent instances', () => {
+    it('two concurrent agent.resume() calls on separate instances fire events only to their respective observers', async () => {
+      // arrange
+      const obsA = { onRunStart: vi.fn(), onRunEnd: vi.fn() }
+      const obsB = { onRunStart: vi.fn(), onRunEnd: vi.fn() }
+      const stubStoreA = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'agent-A', sessionId: 'sess-A', runId: 'run-a', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step1',
+          },
+          step: 'step1', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const stubStoreB = makeStubStore({
+        load: vi.fn().mockResolvedValue({
+          agentId: 'agent-B', sessionId: 'sess-B', runId: 'run-b', version: 0,
+          phase: 'paused', startedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          initialState: {}, finalState: {
+            $interrupt: { interruptId: '$auto:0', prompt: '?' },
+            $interruptResponses: {}, $cursor: 'step1',
+          },
+          step: 'step1', signal: '$interrupt',
+        } satisfies StoredRun),
+        save: vi.fn().mockResolvedValue(undefined),
+      })
+      const hA = createHarness<Record<string, never>>()().store({ session: stubStoreA }).loop(l => {
+        l.start().step('step1', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agentA = createAgent('agent-A', hA, {})
+      const hB = createHarness<Record<string, never>>()().store({ session: stubStoreB }).loop(l => {
+        l.start().step('step1', { run: async () => ({}), route: () => 'done' }).on('done').end()
+      })
+      const agentB = createAgent('agent-B', hB, {})
+
+      // act
+      const runA = agentA.resume('respA', 'sess-A', '$auto:0', { observer: obsA })
+      const runB = agentB.resume('respB', 'sess-B', '$auto:0', { observer: obsB })
+      await Promise.all([runA, runB])
+
+      // assert
+      expect(obsA.onRunStart).toHaveBeenCalledOnce()
+      expect(obsA.onRunEnd).toHaveBeenCalledOnce()
+      expect(obsB.onRunStart).toHaveBeenCalledOnce()
+      expect(obsB.onRunEnd).toHaveBeenCalledOnce()
+      expect(obsA.onRunStart.mock.calls[0]![0].agentId).toBe('agent-A')
+      expect(obsB.onRunStart.mock.calls[0]![0].agentId).toBe('agent-B')
     })
   })
 })

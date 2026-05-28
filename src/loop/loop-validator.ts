@@ -1,4 +1,4 @@
-import type { LoopDefinition, TransitionTarget } from './loop-dsl.js'
+import type { LoopDefinition } from './loop-dsl.js'
 
 // -----------------------------------------------------------------------
 // Error class
