@@ -23,7 +23,7 @@ import type { LeaseRef } from './ctx-keep-alive.js'
 import { randomUUID } from 'node:crypto'
 import { extractRunEvents } from './event-callbacks.js'
 import { extractRunListeners } from './ctx-emit.js'
-import type { Observer } from './observer.js'
+import type { Observer, StepContext } from './observer.js'
 import { initializeState } from './session-store.js'
 
 // -----------------------------------------------------------------------
@@ -333,6 +333,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     iId: string,
     resumeOpts?: { onStoreError?: (error: unknown, phase: 'load' | 'persist' | 'claim') => void },
     observer?: Observer,
+    setStepContextSlots?: ReadonlyArray<{ setStepContext(ctx: StepContext): void }>,
   ): RunHandle => {
     let _stopped = false
     const abortController = new AbortController()
@@ -403,6 +404,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
               ...(resumeOpts?.onStoreError !== undefined ? { onStoreError: resumeOpts.onStoreError } : {}),
               ...(leaseRef !== undefined ? { leaseRef, claimTtlMs: claimOptions.ttlMs } : {}),
               ...(observer !== undefined ? { observer } : {}),
+              ...(setStepContextSlots !== undefined && setStepContextSlots.length > 0 ? { setStepContextSlots } : {}),
             },
           )
           if (r.signal === '$interrupt') interruptPendingSessions.add(sId)
@@ -519,6 +521,18 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         }
       }
 
+      // Build setStepContextSlots: pre-filter all slots that expose setStepContext (F36)
+      const setStepContextSlots: Array<{ setStepContext(ctx: StepContext): void }> = []
+      for (const slot of [...agentInternals.resolvedProviders.values(), ...Object.values(runtimeSlots)]) {
+        if (
+          slot !== null &&
+          typeof slot === 'object' &&
+          typeof (slot as Record<string, unknown>)['setStepContext'] === 'function' // as: duck-type check
+        ) {
+          setStepContextSlots.push(slot as { setStepContext(ctx: StepContext): void }) // as: narrowed by duck-type check on line above
+        }
+      }
+
       // Extract parentRunId from resources (reserved key)
       const parentRunId =
         typeof resources['parentRunId'] === 'string' ? resources['parentRunId'] : undefined
@@ -539,6 +553,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
         ...(observer !== undefined ? { observer } : {}),
         ...(agentOptions?.instanceId !== undefined ? { instanceId: agentOptions.instanceId } : {}),
         ...(parentRunId !== undefined ? { parentRunId } : {}),
+        ...(setStepContextSlots.length > 0 ? { setStepContextSlots } : {}),
       }
 
       // lastResult captures the LoopResult for same-process in-memory resume chaining
@@ -669,6 +684,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                     ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
                     ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
                     ...(observer !== undefined ? { observer } : {}),
+                    ...(setStepContextSlots.length > 0 ? { setStepContextSlots } : {}),
                   },
                 )
                 if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -703,6 +719,7 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
                   ...(events.onInterrupt !== undefined ? { onInterrupt: events.onInterrupt } : {}),
                   ...(Object.keys(listeners).length > 0 ? { listeners } : {}),
                   ...(observer !== undefined ? { observer } : {}),
+                  ...(setStepContextSlots.length > 0 ? { setStepContextSlots } : {}),
                 },
               )
               if (r.signal === '$interrupt') interruptPendingSessions.add(sessionId)
@@ -749,7 +766,18 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
           (slot as { bindObserver: (o: Observer) => void }).bindObserver(observer ?? NOOP_OBSERVER) // as: narrowed by duck-type check on line above
         }
       }
-      return makeAgentResumeHandle(response, sessionId, interruptId, resumeOpts, observer ?? undefined)
+      // Build setStepContextSlots from resolvedProviders only (no runtime slots in resume path)
+      const setStepContextSlots: Array<{ setStepContext(ctx: StepContext): void }> = []
+      for (const slot of agentInternals.resolvedProviders.values()) {
+        if (
+          slot !== null &&
+          typeof slot === 'object' &&
+          typeof (slot as Record<string, unknown>)['setStepContext'] === 'function' // as: duck-type check
+        ) {
+          setStepContextSlots.push(slot as { setStepContext(ctx: StepContext): void }) // as: narrowed by duck-type check on line above
+        }
+      }
+      return makeAgentResumeHandle(response, sessionId, interruptId, resumeOpts, observer ?? undefined, setStepContextSlots.length > 0 ? setStepContextSlots : undefined)
     },
 
     status: (sessionId: string) => querySessionPhase(capturedStore, id, sessionId),

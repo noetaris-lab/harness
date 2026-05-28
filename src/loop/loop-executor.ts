@@ -98,6 +98,12 @@ export interface LoopCallbacks {
    * Included in RunContext when provided.
    */
   parentRunId?: string
+  /**
+   * Pre-filtered list of ObserverAware slots that expose setStepContext.
+   * The loop calls slot.setStepContext(stepCtx) for each entry at every step
+   * start, before invoking step.run. F36.
+   */
+  setStepContextSlots?: ReadonlyArray<{ setStepContext(ctx: StepContext): void }>
 }
 
 export async function runLoop(
@@ -155,6 +161,11 @@ export async function runLoop(
     stepCtxRef.current = stepCtx
     const stepStart = Date.now()
     obs?.onStepStart?.(stepCtx)
+    if (callbacks?.setStepContextSlots !== undefined) {
+      for (const slot of callbacks.setStepContextSlots) {
+        slot.setStepContext(stepCtx)
+      }
+    }
 
     let runSucceeded = false
 

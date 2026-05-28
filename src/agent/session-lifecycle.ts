@@ -3,7 +3,7 @@ import type { ProviderEntry } from '../harness/harness-builder.js'
 import type { LoopDefinition } from '../loop/loop-dsl.js'
 import type { LoopResult } from '../loop/loop-executor.js'
 import { runLoop } from '../loop/loop-executor.js'
-import type { Observer } from './observer.js'
+import type { Observer, StepContext } from './observer.js'
 import {
   type SessionStore,
   type StoredRun,
@@ -63,6 +63,11 @@ export interface SessionRunOptions {
    * correlation. Absent for top-level runs.
    */
   readonly parentRunId?: string
+  /**
+   * Pre-filtered list of ObserverAware slots that expose setStepContext.
+   * Passed through to runLoop callbacks. Absent when no slots expose setStepContext. F36.
+   */
+  readonly setStepContextSlots?: ReadonlyArray<{ setStepContext(ctx: StepContext): void }>
 }
 
 // -----------------------------------------------------------------------

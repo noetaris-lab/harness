@@ -74,6 +74,10 @@ export interface Observer {
  * Implemented by resources (e.g. LLM adapters) that accept an {@link Observer}
  * at run time.  The harness calls `bindObserver` on every slot value that
  * implements this interface before the first step runs.
+ *
+ * Optionally, the harness calls `setStepContext` at the start of each step for
+ * every slot that exposes it.  Adapters use this to attribute per-step telemetry
+ * (e.g. `observer.onEvent`) to the correct step without manual calls from step code.
  */
 export interface ObserverAware {
   /**
@@ -81,6 +85,16 @@ export interface ObserverAware {
    * invocation before execution begins.
    */
   bindObserver(observer: Observer): void
+
+  /**
+   * Receive the current step context.  The harness calls this at the start of
+   * each step for every slot that exposes this method, before calling `step.run`.
+   *
+   * Adapters that emit `observer.onEvent` in their `invoke()` method store the
+   * provided `StepContext` and use it as the first argument to `onEvent`, so
+   * events are attributed to the correct step automatically.
+   */
+  setStepContext?(ctx: StepContext): void
 }
 
 /**
