@@ -64,6 +64,13 @@ export type Harness<
    */
   // loop() parameter is LoopBuilder<State, Ctx> after F4 implementation
   loop(builder: (l: LoopBuilder<State, Ctx>) => void): Harness<Ctx, State, Req, Run>
+
+  /**
+   * Return the frozen {@link LoopDefinition} captured when {@link loop} was called.
+   *
+   * @throws {LoopNotDefinedError} if `h.loop()` has not been called on this harness instance.
+   */
+  definition(): LoopDefinition
 }
 
 // -----------------------------------------------------------------------
@@ -132,6 +139,16 @@ export class HarnessInternalsError extends Error {
   constructor() {
     super('value is not a HarnessBuilder instance — was it created by createHarness?')
     this.name = 'HarnessInternalsError'
+  }
+}
+
+/**
+ * Thrown by {@link Harness.definition} when `h.loop()` has not been called yet.
+ */
+export class LoopNotDefinedError extends Error {
+  constructor() {
+    super('loop is not defined — call h.loop() before accessing h.definition()')
+    this.name = 'LoopNotDefinedError'
   }
 }
 
@@ -226,6 +243,13 @@ function createBuilderInstance<
         _state: undefined,
       }
       return createBuilderInstance(newInternals)
+    },
+
+    definition(): LoopDefinition {
+      if (internals.loopDef === undefined) {
+        throw new LoopNotDefinedError()
+      }
+      return internals.loopDef
     },
 
     [_internals]: internals,

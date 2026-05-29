@@ -30,7 +30,7 @@ export {
   type RuntimeMarker,
   type DeepWithMarkers,
 } from './harness/ctx-markers.js'
-export { createHarness, type Harness } from './harness/harness-builder.js'
+export { createHarness, type Harness, LoopNotDefinedError } from './harness/harness-builder.js'
 export {
   createAgent,
   type Agent,
@@ -45,3 +45,14 @@ export {
   type Observer,
   type ObserverAware,
 } from './agent/observer.js'
+
+export {
+  type LoopDefinition,
+  type StepDef,
+  type SignalTransition,
+  type TransitionTarget,
+  type FrameworkState,
+  type StepState,
+  type RunFn,
+  type RouteFn,
+} from './loop/loop-dsl.js'

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createHarness, getInternals, HarnessInternalsError } from './harness-builder.js'
+import { createHarness, getInternals, HarnessInternalsError, LoopNotDefinedError } from './harness-builder.js'
 import { field } from './state-field.js'
 import { required, runtime } from './ctx-markers.js'
 
@@ -283,6 +283,135 @@ describe('HarnessBuilder', () => {
       expect(err.message).toContain('HarnessBuilder')
       expect(err).toBeInstanceOf(Error)
       expect(err).toBeInstanceOf(HarnessInternalsError)
+    })
+  })
+
+  describe('definition() — loop topology correctness', () => {
+    it('returns LoopDefinition with correct entryStep and step name for a single-step loop', () => {
+      // arrange
+      const runFn = vi.fn()
+      const routeFn = vi.fn().mockReturnValue('done')
+      const h = createHarness()().loop(l => { l.start().step('think', { run: runFn, route: routeFn }).on('done').end() })
+
+      // act
+      const def = h.definition()
+
+      // assert
+      expect(def.entryStep).toBe('think')
+      expect(def.steps).toHaveLength(1)
+      expect(def.steps[0]!.name).toBe('think')
+    })
+
+    it('returns steps in declaration order for a two-step loop', () => {
+      // arrange
+      const runA = vi.fn()
+      const routeA = vi.fn().mockReturnValue('next')
+      const routeB = vi.fn().mockReturnValue('done')
+      const h = createHarness()().loop(l => {
+        l.start().step('a', { run: runA, route: routeA }).on('next').to('b').step('b', { route: routeB }).on('done').end()
+      })
+
+      // act
+      const def = h.definition()
+
+      // assert
+      expect(def.steps).toHaveLength(2)
+      expect(def.steps[0]!.name).toBe('a')
+      expect(def.steps[1]!.name).toBe('b')
+      expect(def.entryStep).toBe('a')
+    })
+  })
+
+  describe('definition() — reference identity and immutability', () => {
+    it('returns the same object reference on repeated calls', () => {
+      // arrange
+      const runFn = vi.fn()
+      const routeFn = vi.fn().mockReturnValue('done')
+      const h = createHarness()().loop(l => { l.start().step('s', { run: runFn, route: routeFn }).on('done').end() })
+
+      // act
+      const first = h.definition()
+      const second = h.definition()
+
+      // assert
+      expect(first).toBe(second)
+    })
+
+    it('returns a frozen LoopDefinition object', () => {
+      // arrange
+      const runFn = vi.fn()
+      const h = createHarness()().loop(l => { l.start().step('s', { run: runFn, route: () => 'done' }).on('done').end() })
+      const def = h.definition()
+
+      // act / assert
+      expect(Object.isFrozen(def)).toBe(true)
+    })
+
+    it('returns a LoopDefinition whose steps array is frozen', () => {
+      // arrange
+      const runFn = vi.fn()
+      const h = createHarness()().loop(l => { l.start().step('s', { run: runFn, route: () => 'done' }).on('done').end() })
+      const def = h.definition()
+
+      // act / assert
+      expect(Object.isFrozen(def.steps)).toBe(true)
+    })
+
+    it('returns a LoopDefinition where each StepDef is frozen', () => {
+      // arrange
+      const runFn = vi.fn()
+      const h = createHarness()().loop(l => { l.start().step('s', { run: runFn, route: () => 'done' }).on('done').end() })
+      const def = h.definition()
+
+      // act / assert
+      expect(Object.isFrozen(def.steps[0])).toBe(true)
+    })
+  })
+
+  describe('definition() — chaining preservation', () => {
+    it('is available and returns correct definition after chaining provide() after loop()', () => {
+      // arrange
+      const runFn = vi.fn()
+      const routeFn = vi.fn().mockReturnValue('done')
+      const h = createHarness<{ x: string }>()()
+        .loop(l => { l.start().step('s', { run: runFn, route: routeFn }).on('done').end() })
+        .provide('x', 'value')
+
+      // act
+      const def = h.definition()
+
+      // assert
+      expect(def.entryStep).toBe('s')
+      expect(def.steps).toHaveLength(1)
+    })
+  })
+
+  describe('definition() — LoopNotDefinedError thrown before loop()', () => {
+    it('throws LoopNotDefinedError on a freshly created harness with no calls', () => {
+      // arrange
+      const h = createHarness()()
+
+      // act / assert
+      expect(() => h.definition()).toThrow(LoopNotDefinedError)
+    })
+
+    it('throws LoopNotDefinedError after provide() calls but without loop()', () => {
+      // arrange
+      const h = createHarness<{ model: string }>()().provide('model', 'claude-3-haiku')
+
+      // act / assert
+      expect(() => h.definition()).toThrow(LoopNotDefinedError)
+    })
+  })
+
+  describe('LoopNotDefinedError', () => {
+    it('has name LoopNotDefinedError and message containing h.loop()', () => {
+      // arrange
+      const error = new LoopNotDefinedError()
+
+      // act / assert
+      expect(error.name).toBe('LoopNotDefinedError')
+      expect(error.message).toContain('h.loop()')
     })
   })
 })
