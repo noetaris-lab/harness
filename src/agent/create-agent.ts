@@ -50,6 +50,11 @@ export interface AgentOptions {
    * via `RunContext.instanceId`.
    */
   readonly instanceId?: string
+  /**
+   * Concrete store instances for slots declared with `required()` inside `h.store()`.
+   * Keyed by the store key used in the harness (e.g. `{ session: myStore }`).
+   */
+  readonly stores?: Record<string, unknown>
 }
 
 // -----------------------------------------------------------------------
@@ -191,6 +196,28 @@ export class UnknownRunSlotError extends Error {
   }
 }
 
+/** Thrown by {@link createAgent} when a `required()` store marker has no matching entry in `agentOptions.stores`. */
+export class MissingStoreSlotError extends Error {
+  /** The store key (e.g. `"session"`) that was not provided. */
+  readonly key: string
+  constructor(key: string) {
+    super(`required store slot "${key}" was not provided in createAgent options.stores`)
+    this.name = 'MissingStoreSlotError'
+    this.key = key
+  }
+}
+
+/** Thrown by {@link createAgent} when `agentOptions.stores` contains a key that is not declared as `required()` in the harness. */
+export class UnexpectedStoreSlotError extends Error {
+  /** The unexpected store key. */
+  readonly key: string
+  constructor(key: string) {
+    super(`store slot "${key}" was not declared as required() in the harness — do not pass it in options.stores`)
+    this.name = 'UnexpectedStoreSlotError'
+    this.key = key
+  }
+}
+
 // -----------------------------------------------------------------------
 // Module-private symbol for AttachInternals
 // -----------------------------------------------------------------------
@@ -299,8 +326,31 @@ export function createAgent<Ctx, State, Req extends keyof Ctx, Run extends keyof
     }
   }
 
+  // Validate the 'session' store slot — the only store key with framework-managed lifecycle.
+  // Other store keys (user-defined, future ctx.store.<name>) are not processed here.
+  let sessionIsRequired = false
+  for (const entry of storeEntries) {
+    const storeValue = entry.value
+    if (storeValue === null || typeof storeValue !== 'object') continue
+    const storeRec = storeValue as Record<string, unknown> // as: same narrowing as resolveSessionStore
+    if ('session' in storeRec && isRequiredMarker(storeRec['session'])) {
+      sessionIsRequired = true // last-registered store entry wins, consistent with resolveSessionStore
+    }
+  }
+  const sessionStoreOverride = agentOptions?.stores?.['session']
+  const storeOverrides: Record<string, unknown> = {}
+  if (sessionIsRequired) {
+    if (sessionStoreOverride === undefined) throw new MissingStoreSlotError('session')
+    storeOverrides['session'] = sessionStoreOverride
+  } else if (sessionStoreOverride !== undefined) {
+    throw new UnexpectedStoreSlotError('session')
+  }
+
   // Resolve session store from store entries at construction time
-  const capturedStore = resolveSessionStore(storeEntries)
+  const capturedStore = resolveSessionStore(
+    storeEntries,
+    Object.keys(storeOverrides).length > 0 ? storeOverrides : undefined,
+  )
 
   // Construct AgentInternals
   const agentInternals: AgentInternals = {

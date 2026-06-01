@@ -10,6 +10,8 @@ import {
   MissingRuntimeSlotError,
   RequiredSlotInRunError,
   UnknownRunSlotError,
+  MissingStoreSlotError,
+  UnexpectedStoreSlotError,
 } from './create-agent.js'
 import { NoInterruptError } from './interrupt-resume.js'
 import { SessionInFlightError } from './concurrency-errors.js'
@@ -3389,6 +3391,154 @@ describe('createAgent', () => {
       expect(obsB.onRunEnd).toHaveBeenCalledOnce()
       expect(obsA.onRunStart.mock.calls[0]![0].agentId).toBe('agent-A')
       expect(obsB.onRunStart.mock.calls[0]![0].agentId).toBe('agent-B')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Group: required() store slot — F45
+  // -----------------------------------------------------------------------
+
+  describe('Group: required() store slot', () => {
+    function makeStore(): SessionStore {
+      const runs = new Map<string, StoredRun>()
+      return {
+        load: vi.fn(async (_agentId: string, sessionId: string) => runs.get(sessionId) ?? null),
+        save: vi.fn(async (_agentId: string, sessionId: string, run: StoredRun) => { runs.set(sessionId, run) }),
+      }
+    }
+
+    // --- MissingStoreSlotError cases ---
+
+    it('throws MissingStoreSlotError when session is required() and agentOptions is absent', () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: required() })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {})).toThrow(MissingStoreSlotError)
+      try {
+        createAgent('test-agent', h, {})
+      } catch (error) {
+        expect((error as MissingStoreSlotError).key).toBe('session') // as: error class verified by preceding toThrow
+        expect((error as MissingStoreSlotError).message).toContain('session') // as: same
+      }
+    })
+
+    it('throws MissingStoreSlotError when session is required() and options.stores is absent', () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: required() })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {}, {})).toThrow(MissingStoreSlotError)
+    })
+
+    it('throws MissingStoreSlotError when session is required() and options.stores omits the session key', () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: required() })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {}, { stores: {} })).toThrow(MissingStoreSlotError)
+      try {
+        createAgent('test-agent', h, {}, { stores: {} })
+      } catch (error) {
+        expect((error as MissingStoreSlotError).key).toBe('session') // as: error class verified by preceding toThrow
+      }
+    })
+
+    // --- UnexpectedStoreSlotError cases ---
+
+    it('throws UnexpectedStoreSlotError when options.stores.session is provided but harness has a concrete session store', () => {
+      // arrange
+      const concreteStore = makeStore()
+      const overrideStore = makeStore()
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: concreteStore })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {}, { stores: { session: overrideStore } })).toThrow(UnexpectedStoreSlotError)
+      try {
+        createAgent('test-agent', h, {}, { stores: { session: overrideStore } })
+      } catch (error) {
+        expect((error as UnexpectedStoreSlotError).key).toBe('session') // as: error class verified by preceding toThrow
+        expect((error as UnexpectedStoreSlotError).message).toContain('session') // as: same
+      }
+    })
+
+    it('throws UnexpectedStoreSlotError when options.stores.session is provided but harness has no session store', () => {
+      // arrange
+      const store = makeStore()
+      const h = createHarness<Record<string, never>>()({})
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {}, { stores: { session: store } })).toThrow(UnexpectedStoreSlotError)
+    })
+
+    // --- Happy path ---
+
+    it('creates agent successfully when session is required() and a valid store is provided in options.stores', () => {
+      // arrange
+      const store = makeStore()
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: required() })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {}, { stores: { session: store } })).not.toThrow()
+    })
+
+    it('uses the provided store for load/save when session is fulfilled via options.stores', async () => {
+      // arrange
+      const store = makeStore()
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: required() })
+        .loop(buildValidLoop)
+      const agent = createAgent('test-agent', h, {}, { stores: { session: store } })
+
+      // act
+      const handle = agent.run({}, {})
+      await handle
+
+      // assert — store.save was called, confirming the agent used the provided store
+      expect(store.save).toHaveBeenCalled()
+    })
+
+    // --- Backward compatibility ---
+
+    it('does not throw when session is a concrete store (no required() marker) — backward compat', () => {
+      // arrange
+      const store = makeStore()
+      const h = createHarness<Record<string, never>>()({})
+        .store({ session: store })
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {})).not.toThrow()
+    })
+
+    it('does not throw when no .store() is declared on the harness', () => {
+      // arrange
+      const h = createHarness<Record<string, never>>()({})
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {})).not.toThrow()
+    })
+
+    it('does not throw when harness has a non-session custom store and options.stores is absent', () => {
+      // arrange — custom store keys are user-defined (future ctx.store.<name>); not validated here
+      const h = createHarness<Record<string, never>>()({})
+        .store({ graph: { load: vi.fn(), save: vi.fn() } } as any) // any: custom key not in SessionStore shape
+        .loop(buildValidLoop)
+
+      // act & assert
+      expect(() => createAgent('test-agent', h, {})).not.toThrow()
     })
   })
 })

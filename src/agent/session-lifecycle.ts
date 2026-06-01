@@ -76,6 +76,7 @@ export interface SessionRunOptions {
 
 export function resolveSessionStore(
   storeEntries: readonly ProviderEntry[],
+  overrides?: Record<string, unknown>,
 ): SessionStore | undefined {
   let result: SessionStore | undefined = undefined
 
@@ -88,7 +89,9 @@ export function resolveSessionStore(
     const rec = value as Record<string, unknown> // as: TypeScript cannot narrow `object` to `Record<string, unknown>` for index access
     if (!('session' in rec)) continue
 
-    const session = rec['session']
+    // Prefer override when provided (fulfils a required() marker declared at harness-build time)
+    const rawSession = rec['session']
+    const session = (overrides !== undefined && 'session' in overrides) ? overrides['session'] : rawSession
     if (session === null || typeof session !== 'object') continue
 
     const s = session as Record<string, unknown> // as: same narrowing needed to index into the duck-typed session object
