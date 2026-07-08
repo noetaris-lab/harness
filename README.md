@@ -124,16 +124,19 @@ h.provide('model',   runtime())           // per-run   — supplied at agent.run
 
 ### Session Store
 
-`h.store()` adds persistence. The reserved `session` key is used by the framework to save and restore state across runs; all other keys are surfaced as `ctx.store.<name>`.
+`h.store()` adds persistence. The reserved `session` key is used by the framework to save and restore state across runs.
 
 ```ts
 import { InMemorySessionStore } from '@noetaris/harness-store'
 
 h.store({
-  session:   new InMemorySessionStore(), // framework-managed lifecycle
-  knowledge: new MyKnowledgeGraph(),     // available as ctx.store.knowledge
+  session: new InMemorySessionStore(), // framework-managed lifecycle
 })
 ```
+
+> **Note:** Only the `session` key is processed today. Surfacing additional
+> store keys to steps as `ctx.store.<name>` is planned but not yet wired up —
+> non-session keys passed to `h.store()` are currently ignored.
 
 The framework injects `ctx.sessionId` automatically on every run — no declaration in `Ctx` needed.
 
